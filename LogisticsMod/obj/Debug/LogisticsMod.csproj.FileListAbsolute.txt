@@ -1,0 +1,11 @@
+C:\Games\Solar Expanse [Early Access] (2026)\BepInEx\plugins\logisticsmod\LogisticsMod.dll
+C:\temp\logiModDevRoot\NewVersion\LogisticsMod\obj\Debug\LogisticsMod.csproj.AssemblyReference.cache
+C:\temp\logiModDevRoot\NewVersion\LogisticsMod\obj\Debug\LogisticsMod.GeneratedMSBuildEditorConfig.editorconfig
+C:\temp\logiModDevRoot\NewVersion\LogisticsMod\obj\Debug\LogisticsMod.AssemblyInfoInputs.cache
+C:\temp\logiModDevRoot\NewVersion\LogisticsMod\obj\Debug\LogisticsMod.AssemblyInfo.cs
+C:\temp\logiModDevRoot\NewVersion\LogisticsMod\obj\Debug\LogisticsMod.csproj.CoreCompileInputs.cache
+C:\temp\logiModDevRoot\NewVersion\LogisticsMod\obj\Debug\LogisticsMod.dll
+C:\temp\logiModDevRoot\NewVersion\LogisticsMod\obj\Debug\LogisticsMod.pdb
+C:\Games\Solar Expanse [Early Access] (2026)\BepInEx\plugins\logisticsmod\LogisticsMod.pdb
+C:\Programs\Steam\steamapps\common\Solar Expanse\BepInEx\plugins\logisticsmod\LogisticsMod.dll
+C:\Programs\Steam\steamapps\common\Solar Expanse\BepInEx\plugins\logisticsmod\LogisticsMod.pdb
