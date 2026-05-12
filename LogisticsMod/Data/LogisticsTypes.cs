@@ -12,16 +12,9 @@ public class LogisticsRequest
     public ResourceDefinitionIDSave resourceDef;
     public double requestedAmount;
     public LogisticsRequestStatus status;
-    public bool takeFuelFromTarget;
 
     [NonSerialized]
     public ResourceDefinition ResourceDefinition;
-
-    [NonSerialized]
-    public ObjectInfo homeProvider;
-
-    [NonSerialized]
-    public int activeMissionId = -1;
 
     [NonSerialized]
     public string statusNote;

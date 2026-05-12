@@ -9,3 +9,5 @@ C:\temp\logiModDevRoot\NewVersion\LogisticsMod\obj\Debug\LogisticsMod.pdb
 C:\Games\Solar Expanse [Early Access] (2026)\BepInEx\plugins\logisticsmod\LogisticsMod.pdb
 C:\Programs\Steam\steamapps\common\Solar Expanse\BepInEx\plugins\logisticsmod\LogisticsMod.dll
 C:\Programs\Steam\steamapps\common\Solar Expanse\BepInEx\plugins\logisticsmod\LogisticsMod.pdb
+C:\temp\logiModDevRoot\NewVersion\LogisticsMod\bin\Debug\LogisticsMod.dll
+C:\temp\logiModDevRoot\NewVersion\LogisticsMod\bin\Debug\LogisticsMod.pdb
