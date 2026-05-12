@@ -14,6 +14,9 @@ A [BepInEx](https://github.com/BepInEx/BepInEx) mod for the game **Solar Expanse
 - **Automated interplanetary logistics** — set up "GET" requests and "SEND" providers on any celestial body, and the mod handles the rest.
 - **Spacecraft (SC) delivery** — assign quotas to ship types (e.g. "use up to 3 TALOS for logistics"). The mod finds idle ships at the provider, creates cyclical missions, and delivers resources automatically.
 - **Launch Vehicle (LV) delivery** — enable specific LV types for surface-to-orbit or surface-to-other-body deliveries. Uses orbital containers for same-body orbit, regular spacecraft for interplanetary.
+- **Smart ship selection (best-fit)** — the mod selects the minimum number of ships needed to meet delivery capacity, instead of blindly dispatching the first available ship.
+- **Solar & fuel reachability checks** — validates that spacecraft can actually reach the destination and have enough fuel for the return trip. Solar sail ships are preferred for long-haul routes.
+- **Stuck mission auto-cleanup** — automatically detects and recovers from cyclical or one-shot missions that failed to depart, resetting requests to retry.
 - **Quota-based ship management** — no ship locking or hiding. Quotas are soft limits: ships remain visible and usable in the vanilla mission planner. Logistics simply won't exceed the quota.
 - **Persistent save/load** — all requests, providers, and quotas are saved per save file. Active deliveries are reconciled on load.
 - **Button-based amount input** — no text fields, just `+10` `+100` `+1K` buttons for quick resource amount entry.
@@ -71,22 +74,29 @@ ObjectInfoWindow (game)
        └─ LAUNCH VEHICLE section (LV toggles)
 
 LogisticsObserver (static)
-  ├─ OnDayChange() — main loop
-  ├─ CountActiveLogisticsCycles() — query game state
-  ├─ TryCreateDeliveries() — SC + LV delivery creation
-  └─ SetupCycleMission() — create game cycles
+  ├─ OnDayChange() — main loop (cached SC/LV lists)
+  ├─ TryCreateDeliveries() — SC + LV delivery creation (best-fit)
+  ├─ SetupCycleMission() — create game cycles
+  ├─ SetupCatapultCycleMission() — magnetic catapult cycles
+  ├─ CleanupStuckMissions() — recover from failed deliveries
+  └─ Solar/fuel reachability checks
 
 LogisticsNetwork (static)
   └─ Dictionary<int, LogisticsObjectData> — keyed by oi.id
 
 LogisticsPersistence (static)
   └─ JSON save/load per save file
+
+SpaceCraftCyclicalMissionControllerPatches
+  ├─ LogiLoadLimit tracking — persists catapult cargo limits
+  └─ ShowNotification handler — reset failed LOGI cycles
 ```
 
 ## Known Issues
 
-- **Launch Vehicles are VERY unstable.** For semi-stable mod operation, do not use them. Cargo landing on planets works fine.
-- **Spacecraft with large cargo capacity** — the ship uses its maximum capacity even if the target object only requested a small amount.
-- **Fuel-based spacecraft** — requires fuel at the target object for the return trip to the home object.
+- **Launch Vehicles are still somewhat unstable.** Surface-to-orbit via LV works best; interplanetary LV deliveries may behave unexpectedly. Consider using spacecraft for cross-body routes.
+- **Spacecraft with large cargo capacity** — the ship uses its maximum capacity even if the target object only requested a small amount (mitigated by best-fit selection but not eliminated).
+- **Fuel-based spacecraft** — requires fuel at the target object for the return trip to the home object. Solar sail ships are strongly recommended for logistics.
 - **Due to the two issues above, solar sail spacecraft work best.**
-- **Magnetic rails** — not yet tested. Will be added later.
+- **Magnetic catapult missions** — not working rn sorry
+- **Multiple simultaneous deliveries** — the mod does not yet coordinate multiple in-flight deliveries to the same destination; excess resources may be delivered.
