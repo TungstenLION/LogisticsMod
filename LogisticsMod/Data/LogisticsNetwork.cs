@@ -23,17 +23,11 @@ public static class LogisticsNetwork
         {
             data = new LogisticsObjectData { ObjectInfo = oi, objectInfoSaveId = oi.id.ToString() };
             _dataByObject[oi.id] = data;
-            LogisticsObserver.Log($"DIAG GetOrCreate: NEW entry for id={oi.id} name=\"{oi.ObjectName}\"");
         }
         else
         {
-            var storedName = (data.ObjectInfo as ObjectInfo)?.ObjectName ?? "NULL";
             if (data.ObjectInfo == null)
                 data.ObjectInfo = oi;
-            if (storedName != oi.ObjectName && storedName != "NULL")
-                LogisticsObserver.LogWarning($"DIAG GetOrCreate: id={oi.id} STORED=\"{storedName}\" INCOMING=\"{oi.ObjectName}\" — REUSING existing entry!");
-            else
-                LogisticsObserver.Log($"DIAG GetOrCreate: id={oi.id} name=\"{oi.ObjectName}\" — returning existing entry");
         }
         return data;
     }
@@ -42,14 +36,10 @@ public static class LogisticsNetwork
     {
         if (oi == null) return null;
         _dataByObject.TryGetValue(oi.id, out var data);
-        if (data != null)
-            LogisticsObserver.Log($"DIAG Get: id={oi.id} name=\"{oi.ObjectName}\" found, storedOI=\"{ (data.ObjectInfo as ObjectInfo)?.ObjectName ?? "NULL" }\"");
-        else
-            LogisticsObserver.Log($"DIAG Get: id={oi.id} name=\"{oi.ObjectName}\" — NOT FOUND");
         return data;
     }
 
-    public static LogisticsRequest AddRequest(ObjectInfo oi, ResourceDefinition rd, double amount, bool takeFuelFromTarget = false)
+    public static LogisticsRequest AddRequest(ObjectInfo oi, ResourceDefinition rd, double amount)
     {
         var data = GetOrCreate(oi);
         var req = new LogisticsRequest
@@ -57,8 +47,7 @@ public static class LogisticsNetwork
             resourceDef = rd,
             ResourceDefinition = rd,
             requestedAmount = amount,
-            status = LogisticsRequestStatus.Pending,
-            takeFuelFromTarget = takeFuelFromTarget
+            status = LogisticsRequestStatus.Pending
         };
         data.requests.Add(req);
         LogisticsObserver.Log($"Added request: {rd.ID} x{amount} on {oi.ObjectName}");
@@ -125,46 +114,30 @@ public static class LogisticsNetwork
 
     public static void ClearAll()
     {
-        var count = _dataByObject.Count;
         _dataByObject.Clear();
-        LogisticsObserver.Log($"DIAG ClearAll: cleared {count} entries");
     }
 
     public static void RemoveObject(ObjectInfo oi)
     {
         if (oi != null)
-        {
-            LogisticsObserver.Log($"DIAG RemoveObject: id={oi.id} name=\"{oi.ObjectName}\"");
             _dataByObject.Remove(oi.id);
-        }
     }
 
     public static List<ObjectInfo> GetAllObjects()
     {
         var objManager = MonoBehaviourSingleton<ObjectInfoManager>.Instance;
         var result = new List<ObjectInfo>();
-        LogisticsObserver.Log($"DIAG GetAllObjects: dict has {_dataByObject.Count} keys");
         foreach (var kv in _dataByObject)
         {
             var oi = kv.Value.ObjectInfo as ObjectInfo;
-            var oiName = oi?.ObjectName ?? "NULL";
             if (oi == null && objManager != null)
             {
                 oi = objManager.GetByID(kv.Key);
                 if (oi != null)
-                {
                     kv.Value.ObjectInfo = oi;
-                    oiName = oi.ObjectName;
-                    LogisticsObserver.Log($"DIAG GetAllObjects: resolved id={kv.Key} name=\"{oiName}\" via objManager");
-                }
-                else
-                    LogisticsObserver.LogWarning($"DIAG GetAllObjects: id={kv.Key} storedOI=\"{oiName}\" — could NOT resolve via objManager");
             }
             if (oi != null)
-            {
                 result.Add(oi);
-                LogisticsObserver.Log($"DIAG GetAllObjects: including id={kv.Key} name=\"{oiName}\"");
-            }
         }
         return result;
     }
@@ -198,6 +171,7 @@ public static class LogisticsNetwork
             foreach (var sc in Object.FindObjectsOfType<Spacecraft>())
             {
                 if (sc == null || sc.spacecraftType == null) continue;
+                if (sc.spacecraftType.MagneticCatapult) continue;
                 if (sc.CurrentlyOnThisObject != oi) continue;
                 var tn = sc.spacecraftType.NameRocketType ?? "SC";
                 if (!result.ContainsKey(tn)) result[tn] = 0;
@@ -219,10 +193,7 @@ public static class LogisticsNetwork
         return result;
     }
 
-    public static bool ObjectRequiresLVForLaunch(ObjectInfo oi)
-    {
-        return oi?.NeedVehicleToLaunch() ?? false;
-    }
+
 
     public static HashSet<ResourceDefinition> GetNetworkResourcesSet(Company player)
     {

@@ -21,16 +21,8 @@ internal static class ObjectInfoWindowPatches
     [HarmonyPostfix]
     private static void SetDataPostfix(ObjectInfoWindow __instance, Game.ObjectInfoDataScripts.ObjectInfoData objectInfoData, bool fromObjectName)
     {
-        var oi = objectInfoData?.ObjectInfo;
-        var nameStr = oi?.ObjectName ?? "NULL";
-        var idStr = oi?.id ?? -1;
-        LogisticsObserver.Log($"DIAG SetData: OIW={__instance.GetInstanceID()} obj=\"{nameStr}\" id={idStr} fromObjectName={fromObjectName}");
-
         var l = __instance.GetComponent<UI.LogisticsUI>();
-        if (l != null && l.isActiveAndEnabled)
-            l.RefreshData(objectInfoData);
-        else
-            LogisticsObserver.LogWarning($"DIAG SetData: LogisticsUI null or disabled on OIW={__instance.GetInstanceID()}");
+        l?.RefreshData(objectInfoData);
     }
 
     [HarmonyPatch(typeof(ObjectInfoWindow), "RebuildLayout")]

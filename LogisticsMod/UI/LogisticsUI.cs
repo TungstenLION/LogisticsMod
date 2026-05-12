@@ -75,35 +75,15 @@ public class LogisticsUI : MonoBehaviour
 
     public void RefreshData(ObjectInfoData oid)
     {
-        var newOi = oid?.ObjectInfo;
-        var newName = newOi?.ObjectName ?? "NULL";
-        var newId = newOi?.id ?? -1;
-        var prevName = _currentObjectInfo?.ObjectName ?? "null";
-        var prevId = _currentObjectInfo?.id ?? -1;
-        LogisticsObserver.Log($"RefreshData: \"{newName}\" (id={newId}), _built={_built}, prev=\"{prevName}\" (id={prevId})");
-
-        if (newOi != null && _currentObjectInfo != null && newId == prevId && newName != prevName)
-            LogisticsObserver.LogWarning($"DIAG RefreshData: SAME id ({newId}) but DIFFERENT name! prev=\"{prevName}\" new=\"{newName}\"");
-
-        if (newOi != null)
-        {
-            var dictData = Data.LogisticsNetwork.Get(newOi);
-            if (dictData != null)
-            {
-                var storedOiName = (dictData.ObjectInfo as ObjectInfo)?.ObjectName ?? "NULL";
-                if (storedOiName != newName)
-                    LogisticsObserver.LogWarning($"DIAG RefreshData: dict entry id={newId} has storedOI=\"{storedOiName}\" but incoming OI name=\"{newName}\" — MISMATCH!");
-                LogisticsObserver.Log($"DIAG RefreshData: dict data for id={newId}: {dictData.requests.Count}req {dictData.providers.Count}prov");
-            }
-            else
-            {
-                LogisticsObserver.Log($"DIAG RefreshData: NO dict entry for id={newId} name=\"{newName}\"");
-            }
-        }
-
         _currentData = oid;
+        var newOi = oid?.ObjectInfo;
         _currentObjectInfo = newOi;
         if (!_built) return;
+        if (!isActiveAndEnabled)
+        {
+            _pendingRefresh = true;
+            return;
+        }
         RefreshAllSections();
     }
 
@@ -127,7 +107,6 @@ public class LogisticsUI : MonoBehaviour
     {
         _getSection.ClearContent();
         var data = Data.LogisticsNetwork.GetOrCreate(_currentObjectInfo);
-        LogisticsObserver.Log($"BuildGet for {_currentObjectInfo?.ObjectName}: {data.requests.Count} requests");
 
         if (data.requests.Count > 0)
         {
@@ -142,10 +121,9 @@ public class LogisticsUI : MonoBehaviour
 
                 var row = MakeHLRow(_getSection.ContentArea, 24f, 8);
                 MakeTMP(row.transform, $"{displayName}: {req.requestedAmount:0.#}  [{statusStr}]{noteStr}", 13, StatusColor(req.status));
+                var capturedOi = _currentObjectInfo;
                 MakeXButton(row.transform, () =>
                 {
-                    var capturedOi = _currentObjectInfo;
-                    LogisticsObserver.Log($"X clicked on GET req idx={idx} capturedOi=\"{capturedOi?.ObjectName}\"(id={capturedOi?.id})");
                     Data.LogisticsNetwork.RemoveRequest(capturedOi, idx);
                     BuildGetSection();
                     RebuildSectionLayout(_getSection);
@@ -179,10 +157,9 @@ public class LogisticsUI : MonoBehaviour
 
                 var row = MakeHLRow(_sendSection.ContentArea, 24f, 8);
                 MakeTMP(row.transform, $"{displayName}: min keep {prov.minimumKeep:0.#}", 13, new Color(0.7f, 0.7f, 0.7f, 1f));
+                var capturedOi = _currentObjectInfo;
                 MakeXButton(row.transform, () =>
                 {
-                    var capturedOi = _currentObjectInfo;
-                    LogisticsObserver.Log($"X clicked on SEND prov idx={idx} capturedOi=\"{capturedOi?.ObjectName}\"(id={capturedOi?.id})");
                     Data.LogisticsNetwork.RemoveProvider(capturedOi, idx);
                     BuildSendSection();
                     RebuildSectionLayout(_sendSection);
@@ -251,9 +228,9 @@ public class LogisticsUI : MonoBehaviour
 
                 MakeTMP(row.transform, quotaTypeName, 13, new Color(0.8f, 0.8f, 0.8f, 1f));
 
+                var capturedOi = _currentObjectInfo;
                 AddSmallButton(row.transform, "-", new Color(0.4f, 0.15f, 0.15f, 1f), () =>
                 {
-                    var capturedOi = _currentObjectInfo;
                     var newVal = quotaCount - 1;
                     if (newVal <= 0)
                         Data.LogisticsNetwork.RemoveQuota(capturedOi, quotaTypeName, isSpacecraft);
@@ -265,7 +242,6 @@ public class LogisticsUI : MonoBehaviour
 
                 AddSmallButton(row.transform, "+", new Color(0.15f, 0.4f, 0.15f, 1f), () =>
                 {
-                    var capturedOi = _currentObjectInfo;
                     Data.LogisticsNetwork.SetQuota(capturedOi, quotaTypeName, quotaCount + 1, isSpacecraft);
                     BuildShipSection(section, isSpacecraft);
                     RebuildSectionLayout(section);
@@ -382,9 +358,9 @@ public class LogisticsUI : MonoBehaviour
 
             MakeTMP(row.transform, $"{shipTypeName}  {totalCount} available ({displayQuota})", 13, new Color(0.8f, 0.8f, 0.8f, 1f));
 
+            var capturedOi = _currentObjectInfo;
             AddSmallButton(row.transform, "+", new Color(0.15f, 0.4f, 0.15f, 1f), () =>
             {
-                var capturedOi = _currentObjectInfo;
                 Data.LogisticsNetwork.SetQuota(capturedOi, shipTypeName, currentQuota + 1, isSpacecraft);
                 if (isSpacecraft) BuildSCSection(); else BuildLVSection();
                 RebuildSectionLayout(section);
@@ -415,24 +391,17 @@ public class LogisticsUI : MonoBehaviour
         var gm = MonoBehaviourSingleton<GameManager>.Instance;
         var player = gm?.Player;
         HashSet<ResourceDefinition> available;
-        if (player != null && _currentObjectInfo != null)
-        {
-            if (isGet)
-                available = Data.LogisticsNetwork.GetNetworkResourcesSet(player);
-            else
-                available = Data.LogisticsNetwork.GetAvailableResourcesOnObject(_currentObjectInfo, player);
-        }
+        if (player != null && _currentObjectInfo != null && isGet)
+            available = Data.LogisticsNetwork.GetNetworkResourcesSet(player);
         else
-        {
             available = new HashSet<ResourceDefinition>();
-        }
 
         foreach (var rd in am.AllResourceDefinitions.ListNotEmpty)
         {
             var rdCaptured = rd;
             var sectionRef = section;
             var isGetCaptured = isGet;
-            var isAvailable = available.Contains(rd);
+            var isAvailable = isGet ? available.Contains(rd) : true;
 
             var row = MakeHLRow(section.ContentArea, 24f, 0);
             row.GetComponent<Image>().color = new Color(0.12f, 0.12f, 0.15f, 1f);
@@ -452,11 +421,20 @@ public class LogisticsUI : MonoBehaviour
     }
 
     private bool _inputConfirmed;
+    private bool _pendingRefresh;
+
+    private void OnEnable()
+    {
+        if (_built && _pendingRefresh)
+        {
+            _pendingRefresh = false;
+            RefreshAllSections();
+        }
+    }
 
     private void ShowAmountInput(LogisticsSection section, ResourceDefinition rd, bool isGet, bool isAvailable = true)
     {
         var capturedOi = _currentObjectInfo;
-        LogisticsObserver.Log($"ShowAmountInput: rd={rd.ID} isGet={isGet} capturedOi=\"{capturedOi?.ObjectName}\"(id={capturedOi?.id})");
         _inputConfirmed = false;
         double currentAmount = 0;
         section.ClearContent();
