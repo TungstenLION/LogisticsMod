@@ -61,7 +61,6 @@ Requests that cannot be fulfilled stay `pending` and retry each day.
 
 - **Solar Expanse** (Steam version)
 - **BepInEx 5.x** (x64)
-- **Newtonsoft.Json** (included with the game)
 
 ## Architecture
 
