@@ -12,6 +12,7 @@ public class LogisticsRequest
     public ResourceDefinitionIDSave resourceDef;
     public double requestedAmount;
     public LogisticsRequestStatus status;
+    public string networkId = "";
 
     [NonSerialized]
     public ResourceDefinition ResourceDefinition;
@@ -34,6 +35,7 @@ public class LogisticsProvider
     public ResourceDefinitionIDSave resourceDef;
     public double minimumKeep;
     public bool isActive;
+    public string networkId = "";
 
     [NonSerialized]
     public ResourceDefinition ResourceDefinition;
@@ -44,6 +46,7 @@ public class ShipQuotaEntry
 {
     public string typeName;
     public int count;
+    public string networkId = "";
 }
 
 [Serializable]
@@ -54,6 +57,9 @@ public class LogisticsObjectData
     public List<LogisticsProvider> providers = new List<LogisticsProvider>();
     public List<ShipQuotaEntry> spacecraftQuota = new List<ShipQuotaEntry>();
     public List<ShipQuotaEntry> launchVehicleQuota = new List<ShipQuotaEntry>();
+
+    [NonSerialized]
+    public bool IsFrozen;
 
     [NonSerialized]
     public object ObjectInfo;

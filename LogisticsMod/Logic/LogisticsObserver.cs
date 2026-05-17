@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using CustomUpdate;
 using Data;
@@ -21,53 +20,25 @@ public static class LogisticsObserver
 {
     private static List<Spacecraft> _cachedSpacecraft;
     private static List<LaunchVehicle> _cachedLaunchVehicles;
-    private static StreamWriter _logWriter;
-    private static int _logSession;
     private static HashSet<int> _busyCatapultIds = new HashSet<int>();
+    private static HashSet<int> _busyLvIds = new HashSet<int>();
 
     public static void ResetRuntimeState()
     {
-        Log($"RESET runtime-state");
         _busyCatapultIds.Clear();
+        _busyLvIds.Clear();
     }
 
-    internal static void Log(string msg)
-    {
-        WriteLog("", msg);
-        Debug.Log("[LogisticsMod] " + msg);
-    }
+    internal static void Log(string msg) { }
 
-    internal static void LogWarning(string msg)
-    {
-        WriteLog("[WARN] ", msg);
-        Debug.LogWarning("[LogisticsMod] " + msg);
-    }
+    internal static void LogWarning(string msg) { }
 
-    internal static void LogError(string msg)
-    {
-        WriteLog("[ERROR] ", msg);
-        Debug.LogError("[LogisticsMod] " + msg);
-    }
-
-    private static void WriteLog(string level, string msg)
-    {
-        if (_logWriter == null)
-        {
-            _logSession++;
-            var path = Path.Combine(Application.dataPath, "..", "BepInEx", $"LogisticsMod_{_logSession}.log");
-            _logWriter = new StreamWriter(path, false) { AutoFlush = true };
-            _logWriter.WriteLine($"=== {DateTime.Now} session={_logSession} ===");
-        }
-        var line = $"[{DateTime.Now:HH:mm:ss}] {level}{msg}";
-        _logWriter.WriteLine(line);
-    }
+    internal static void LogError(string msg) { }
 
     public static void OnDayChange(double days)
     {
         var player = MonoBehaviourSingleton<GameManager>.Instance?.Player;
         if (player == null) return;
-
-        var networkResources = Data.LogisticsNetwork.GetNetworkResourcesSet(player);
 
         _cachedSpacecraft = UnityEngine.Object.FindObjectsOfType<Spacecraft>()
             .Where(sc => sc != null && sc.GetCompany() == player).ToList();
@@ -99,9 +70,12 @@ public static class LogisticsObserver
                 if (mi.complete || mi.cancel) continue;
                 if (mi.company != player) continue;
                 if (!mi.missionName.StartsWith("[LOGI]")) continue;
-                var sc = mi.spacecraftInfo2 as Spacecraft;
-                if (sc != null && sc.GetHashCode() == cid)
-                    { hasMission = true; break; }
+                foreach (var sci in mi.ListSpacecraftInfo2)
+                {
+                    if (sci is Spacecraft sc && sc.GetHashCode() == cid)
+                        { hasMission = true; break; }
+                }
+                if (hasMission) break;
             }
                 if (hasMission)
                     toRemove.Add(cid);
@@ -122,44 +96,98 @@ public static class LogisticsObserver
             Log($"[MCNT] Total active LOGI missions: {logiCount}");
         }
 
-        foreach (var requesterOI in allObjects)
+        // Clear busy LVs whose LV type no longer has active LOGI cycles
         {
-            var reqData = Data.LogisticsNetwork.Get(requesterOI);
-            if (reqData == null) continue;
-
-            foreach (var req in reqData.requests)
+            var lvToRemove = new List<int>();
+            foreach (var lvId in _busyLvIds)
             {
+                var lv = _cachedLaunchVehicles?.FirstOrDefault(l => l?.GetHashCode() == lvId);
+                if (lv?.launchVehicleType == null)
+                {
+                    lvToRemove.Add(lvId);
+                    continue;
+                }
+                var tn = Data.LogisticsNetwork.TypeKey(lv.launchVehicleType.ID, lv.launchVehicleType.Name ?? "LV");
+                if (!lvActive.ContainsKey(tn) || lvActive[tn] == 0)
+                    lvToRemove.Add(lvId);
+            }
+            foreach (var id in lvToRemove)
+                _busyLvIds.Remove(id);
+            if (lvToRemove.Count > 0)
+                Log($"[LV] cleared {lvToRemove.Count} busy LVs, {_busyLvIds.Count} remain busy");
+        }
+
+        // Update frozen state based on atmospheric pressure
+        foreach (var oi in allObjects)
+        {
+            var data = Data.LogisticsNetwork.Get(oi);
+            if (data == null) continue;
+            data.IsFrozen = (oi.HabitabilityParameters?.pressure ?? 0d) > 0.0001d;
+        }
+
+        // Process each network separately
+        var allNetworkIds = Data.LogisticsNetwork.GetAllNetworkIds();
+        foreach (var networkId in allNetworkIds)
+        {
+            var networkResources = Data.LogisticsNetwork.GetNetworkResourcesSet(player, networkId);
+
+            foreach (var requesterOI in allObjects)
+            {
+                var reqData = Data.LogisticsNetwork.Get(requesterOI);
+                if (reqData == null) continue;
+
+                foreach (var req in reqData.requests)
+                {
+                    if (req.networkId != networkId) continue;
                 var rd = req.ResourceDefinition;
                 var rdName = rd?.Name ?? "NULL";
 
                 Log($"[{requesterOI.ObjectName}] req={rdName} amt={req.requestedAmount} status={req.status}");
 
-                if (req.status == Data.LogisticsRequestStatus.Satisfied
-                    || req.status == Data.LogisticsRequestStatus.Failed)
+                // Compute total covered (already there + in transit)
+                double inTransit = 0;
+                if (rd != null)
                 {
-                    if (rd != null)
+                    var mim = MonoBehaviourSingleton<MissionInfoManager>.Instance;
+                    if (mim != null)
                     {
-                        var currentCount = requesterOI.GetObjectInfoData(player)?.CheckResources(rd) ?? 0;
-                        Log($"[{requesterOI.ObjectName}] {rdName}: Satisfied/Failed check — currentCount={currentCount} requested={req.requestedAmount}");
-                        if (currentCount < req.requestedAmount)
+                        foreach (var mi in mim.ListMissionInfo)
                         {
-                            req.status = Data.LogisticsRequestStatus.Pending;
-                            Log($"[{requesterOI.ObjectName}] {rdName}: reopened to Pending (stock dropped)");
+                            if (mi.complete || mi.cancel) continue;
+                            if (mi.company != player) continue;
+                            if (mi.target != requesterOI) continue;
+                            if (!mi.missionName.StartsWith("[LOGI]")) continue;
+                            if (mi.cargoAll?.listCargo == null) continue;
+                            foreach (var c in mi.cargoAll.listCargo)
+                            {
+                                if (c.resourceType == rd)
+                                    inTransit += c.cargoMass;
+                            }
                         }
                     }
-                    if (req.status == Data.LogisticsRequestStatus.Satisfied)
-                    {
-                        Log($"[{requesterOI.ObjectName}] {rdName}: still Satisfied, skip");
-                        continue;
-                    }
-                    if (req.status == Data.LogisticsRequestStatus.Satisfied
-                        || req.status == Data.LogisticsRequestStatus.Failed)
-                    {
-                        req.statusNote = null;
-                        continue;
-                    }
+                }
+                var alreadyThere = requesterOI.GetObjectInfoData(player)?.CheckResources(rd) ?? 0;
+                var totalCovered = alreadyThere + inTransit;
+                Log($"[{requesterOI.ObjectName}] {rdName}: alreadyThere={alreadyThere} inTransit={inTransit} totalCovered={totalCovered} requested={req.requestedAmount}");
+
+                // totalCovered >= requestedAmount → Satisfied, no more ordering
+                if (totalCovered >= req.requestedAmount)
+                {
+                    req.status = Data.LogisticsRequestStatus.Satisfied;
+                    req.statusNote = null;
+                    Log($"[{requesterOI.ObjectName}] {rdName}: Satisfied (totalCovered >= requested)");
+                    continue;
                 }
 
+                // If Satisfied/Failed but stock dropped below target, reopen to Pending
+                if ((req.status == Data.LogisticsRequestStatus.Satisfied || req.status == Data.LogisticsRequestStatus.Failed) && totalCovered < req.requestedAmount)
+                {
+                    req.status = Data.LogisticsRequestStatus.Pending;
+                    req.statusNote = null;
+                    Log($"[{requesterOI.ObjectName}] {rdName}: reopened to Pending (stock dropped below target)");
+                }
+
+                // Pending + stuck_N → skip remaining days
                 if (req.status == Data.LogisticsRequestStatus.Pending
                     && req.statusNote != null && req.statusNote.StartsWith("stuck_"))
                 {
@@ -172,94 +200,67 @@ public static class LogisticsObserver
                     req.statusNote = null;
                 }
 
+                // InProgress + no HACD → retry loop (no confirmed mission)
                 if (req.status == Data.LogisticsRequestStatus.InProgress)
                 {
                     var allCycles = cm?.GetAllCycleMission(player) ?? new List<CycleMissionsData>();
                     bool hacdResult = HasActiveCycleDelivering(requesterOI, rd, allCycles);
-                    if (hacdResult)
+                    if (!hacdResult)
                     {
-                        Log($"[{requesterOI.ObjectName}] {rdName}: InProgress, mission confirmed by HACD — skip");
+                        int retries = 0;
+                        if (req.statusNote != null && req.statusNote.StartsWith("retry_") && int.TryParse(req.statusNote.Substring(6), out var parsed))
+                            retries = parsed;
+
+                        const int maxRetries = 3;
+                        if (retries >= maxRetries)
+                        {
+                            LogWarning($"[{requesterOI.ObjectName}] {rdName}: InProgress but no mission after {retries} retries — resetting to Pending");
+                            req.status = Data.LogisticsRequestStatus.Pending;
+                            req.statusNote = null;
+                            continue;
+                        }
+
+                        req.statusNote = $"retry_{retries + 1}";
+                        Log($"[{requesterOI.ObjectName}] {rdName}: InProgress, async mission pending (retry {retries + 1}/{maxRetries}) — skip");
                         continue;
                     }
-
-                    int retries = 0;
-                    if (req.statusNote != null && req.statusNote.StartsWith("retry_") && int.TryParse(req.statusNote.Substring(6), out var parsed))
-                        retries = parsed;
-
-                    const int maxRetries = 3;
-                    if (retries >= maxRetries)
-                    {
-                        LogWarning($"[{requesterOI.ObjectName}] {rdName}: InProgress but no mission after {retries} retries — resetting to Pending");
-                        req.status = Data.LogisticsRequestStatus.Pending;
-                        req.statusNote = null;
-                        continue;
-                    }
-
-                    req.statusNote = $"retry_{retries + 1}";
-                    Log($"[{requesterOI.ObjectName}] {rdName}: InProgress, async mission pending (retry {retries + 1}/{maxRetries}) — skip");
-                    continue;
+                    // HACD = true → mission confirmed, totalCovered < requested → may order more
+                    Log($"[{requesterOI.ObjectName}] {rdName}: InProgress with HACD, totalCovered={totalCovered} < {req.requestedAmount} — may order more");
                 }
 
+                // Pending → check network resources
+                bool networkNoteSet = false;
                 if (req.status == Data.LogisticsRequestStatus.Pending)
                 {
                     bool hasInNetwork = rd != null && networkResources.Contains(rd);
                     req.statusNote = hasInNetwork ? null : "No provider in network";
                     if (!hasInNetwork)
-                        Log($"[{requesterOI.ObjectName}] {rdName}: No provider in network (skip)");
-                }
-                else
-                    req.statusNote = null;
-                if (rd == null) continue;
-
-                var alreadyThere = requesterOI.GetObjectInfoData(player)?.CheckResources(rd) ?? 0;
-                Log($"[{requesterOI.ObjectName}] {rdName}: alreadyThere={alreadyThere} requestedAmount={req.requestedAmount}");
-                if (alreadyThere >= req.requestedAmount)
-                {
-                    req.status = Data.LogisticsRequestStatus.Satisfied;
-                    Log($"[{requesterOI.ObjectName}] {rdName}: Satisfied (alreadyThere >= requested)");
-                    continue;
-                }
-
-                bool hasActiveDelivery = HasActiveCycleDelivering(requesterOI, rd, allCycleMissions);
-                Log($"[{requesterOI.ObjectName}] {rdName}: HasActiveCycleDelivering={hasActiveDelivery}");
-                if (hasActiveDelivery)
-                {
-                    req.status = Data.LogisticsRequestStatus.InProgress;
-                    continue;
-                }
-
-                double remaining = req.requestedAmount - alreadyThere;
-
-                // subtract in-transit resources from active LOGI missions
-                double inTransit = 0;
-                var mim = MonoBehaviourSingleton<MissionInfoManager>.Instance;
-                if (mim != null)
-                {
-                    foreach (var mi in mim.ListMissionInfo)
                     {
-                        if (mi.complete || mi.cancel) continue;
-                        if (mi.company != player) continue;
-                        if (mi.target != requesterOI) continue;
-                        if (!mi.missionName.StartsWith("[LOGI]")) continue;
-                        if (mi.cargoAll?.listCargo == null) continue;
-                        foreach (var c in mi.cargoAll.listCargo)
-                        {
-                            if (c.resourceType == rd)
-                                inTransit += c.cargoMass;
-                        }
+                        Log($"[{requesterOI.ObjectName}] {rdName}: No provider in network (skip)");
+                        networkNoteSet = true;
                     }
                 }
-                Log($"[{requesterOI.ObjectName}] {rdName}: remaining={remaining} inTransit={inTransit}");
-                remaining -= inTransit;
-                if (remaining <= 0)
+                if (rd == null) continue;
+
+                // HACD → set InProgress (mission exists), but still try to create more
+                if (HasActiveCycleDelivering(requesterOI, rd, allCycleMissions))
                 {
-                    req.status = Data.LogisticsRequestStatus.Satisfied;
-                    Log($"[{requesterOI.ObjectName}] {rdName}: remaining<=0 after inTransit, Satisfied");
-                    continue;
+                    req.status = Data.LogisticsRequestStatus.InProgress;
+                    Log($"[{requesterOI.ObjectName}] {rdName}: HACD confirmed, status=InProgress — may order more");
                 }
 
+                // Skip TryCreateDeliveries if no provider in network
+                if (networkNoteSet) continue;
+
+                // Try to create deliveries to cover the gap
+                double remaining = req.requestedAmount - totalCovered;
                 Log($"[{requesterOI.ObjectName}] {rdName}: creating delivery remaining={remaining}");
-                TryCreateDeliveries(req, requesterOI, rd, remaining, player, scActive, lvActive, usedLvIds, usedCatapultIds);
+                TryCreateDeliveries(req, requesterOI, rd, remaining, player, scActive, lvActive, usedLvIds, usedCatapultIds, networkId);
+
+                // If still Pending after TryCreateDeliveries — set meaningful note
+                if (req.status == Data.LogisticsRequestStatus.Pending && string.IsNullOrEmpty(req.statusNote))
+                    req.statusNote = "No provider available";
+                }
             }
         }
         CleanupStuckMissions(player, cm);
@@ -349,6 +350,22 @@ public static class LogisticsObserver
         CountActiveLogisticsCycles(all, out scActive, out lvActive, out var _);
     }
 
+    private static string GetNetworkIdFromName(string name)
+    {
+        if (name.StartsWith("[LOGI][") && name.Length > 7)
+        {
+            var close = name.IndexOf(']', 7);
+            if (close > 7) return name.Substring(7, close - 7);
+            return "";
+        }
+        return "";
+    }
+
+    private static string ActiveKey(string networkId, string typeName)
+    {
+        return $"{networkId}\0{typeName}";
+    }
+
     private static void CountActiveLogisticsCycles(List<CycleMissionsData> allCycleMissions,
         out Dictionary<string, int> scActive, out Dictionary<string, int> lvActive,
         out Dictionary<string, int> mrActive)
@@ -363,26 +380,31 @@ public static class LogisticsObserver
             if (!cmd.customNameFromPlanMission.StartsWith("[LOGI]")) continue;
             if (cmd.ListSC == null) continue;
 
+            var netId = GetNetworkIdFromName(cmd.customNameFromPlanMission);
+
             foreach (var sci in cmd.ListSC)
             {
                 var sc = sci as Spacecraft;
                 if (sc == null || sc.spacecraftType == null) continue;
                 var tn = Data.LogisticsNetwork.TypeKey(sc.spacecraftType.ID, sc.spacecraftType.NameRocketType ?? "SC");
-                if (!scActive.ContainsKey(tn)) scActive[tn] = 0;
-                scActive[tn]++;
+                var key = ActiveKey(netId, tn);
+                if (!scActive.ContainsKey(key)) scActive[key] = 0;
+                scActive[key]++;
             }
 
             if (cmd.LvTypeA != null)
             {
                 var tnA = Data.LogisticsNetwork.TypeKey(cmd.LvTypeA.ID, cmd.LvTypeA.Name ?? "LV");
-                if (!lvActive.ContainsKey(tnA)) lvActive[tnA] = 0;
-                lvActive[tnA]++;
+                var key = ActiveKey(netId, tnA);
+                if (!lvActive.ContainsKey(key)) lvActive[key] = 0;
+                lvActive[key]++;
             }
             if (cmd.LvTypeB != null)
             {
                 var tnB = Data.LogisticsNetwork.TypeKey(cmd.LvTypeB.ID, cmd.LvTypeB.Name ?? "LV");
-                if (!lvActive.ContainsKey(tnB)) lvActive[tnB] = 0;
-                lvActive[tnB]++;
+                var key = ActiveKey(netId, tnB);
+                if (!lvActive.ContainsKey(key)) lvActive[key] = 0;
+                lvActive[key]++;
             }
         }
     }
@@ -425,6 +447,31 @@ public static class LogisticsObserver
         var oid = destination.GetObjectInfoData(player);
         if (oid == null) return false;
         return oid.CheckResources(fuelType) >= fuelCapacity;
+    }
+
+    private static bool HasFuelForReturnOrbit(Spacecraft sc, ObjectInfo body, Company player)
+    {
+        var scType = sc.spacecraftType;
+        if (scType == null || scType.SolarSC) return true;
+        var fuelType = scType.GetFuelType();
+        if (fuelType == null) return true;
+        double fuelCapacity = scType.GetFuelCapacity(player);
+        if (fuelCapacity <= 0) return true;
+        var orbitOI = body?.LowOrbitCustom?.GetObjectInfo();
+        if (orbitOI == null) return false;
+        var oid = orbitOI.GetObjectInfoData(player);
+        if (oid == null) return false;
+        return oid.CheckResources(fuelType) >= fuelCapacity;
+    }
+
+    private static bool WouldGetStuckOnSurface(Spacecraft sc, ObjectInfo body)
+    {
+        if (sc == null || sc.spacecraftType == null || body == null) return false;
+        if (body.objectTypes != EObjectTypes.Planet && body.objectTypes != EObjectTypes.Moons)
+            return false;
+        if (sc.spacecraftType.DestroyOnLand || sc.spacecraftType.LowOrbitContainer || sc.spacecraftType.MagneticCatapult)
+            return false;
+        return sc.spacecraftType.needLaunchVehicleToGoToMoon;
     }
 
     private static Spacecraft GetMagneticCatapultFromFacility(ObjectInfo providerOI, Company player,
@@ -484,6 +531,62 @@ public static class LogisticsObserver
         return null;
     }
 
+    private static List<Spacecraft> GetAllAvailableCatapultsFromFacility(ObjectInfo providerOI, Company player,
+        HashSet<int> usedCatapultIds)
+    {
+        var result = new List<Spacecraft>();
+        var oid = providerOI.GetObjectInfoData(player);
+        if (oid == null)
+        {
+            LogWarning($"[GACF] {providerOI?.ObjectName}: oid is null");
+            return result;
+        }
+        var cm = MonoBehaviourSingleton<CycleMissionManager>.Instance;
+        Log($"[GACF] {providerOI.ObjectName}: scanning all catapults, usedCatapultIds=[{string.Join(",", usedCatapultIds)}]");
+        foreach (var rr in oid.GetListSpacecraftFacility())
+        {
+            var sc = rr.spacecraft;
+            if (sc == null || sc.spacecraftType == null || !sc.spacecraftType.MagneticCatapult) continue;
+            if (sc.GetCompany() != player) continue;
+            var scName = sc.spacecraftType.NameRocketType ?? "?";
+            var scId = sc.GetHashCode();
+            Log($"[GACF] {providerOI.ObjectName}: found catapult {scName} id={scId}");
+            if (usedCatapultIds.Contains(scId) || _busyCatapultIds.Contains(scId))
+            {
+                Log($"[GACF] {providerOI.ObjectName}: catapult {scName} already used, skip");
+                continue;
+            }
+            if (!sc.IsReadyToPlan())
+            {
+                Log($"[GACF] {providerOI.ObjectName}: catapult {scName} NOT ready");
+                continue;
+            }
+            var existingCycle = cm.GetCycleMission(sc);
+            if (existingCycle != null)
+            {
+                if (!existingCycle.customNameFromPlanMission.StartsWith("[LOGI]"))
+                {
+                    Log($"[GACF] {providerOI.ObjectName}: catapult {scName} has non-LOGI cycle, skip");
+                    continue;
+                }
+                Log($"[GACF] {providerOI.ObjectName}: catapult {scName} removing stale cycle \"{existingCycle.customNameFromPlanMission}\"");
+                cm.RemoveCycleMission(sc);
+                ResetCycleRequests(existingCycle);
+            }
+
+            if (HasCatapultActiveMission(sc, player))
+            {
+                Log($"[GACF] {providerOI.ObjectName}: catapult {scName} has active one-shot LOGI mission, skip");
+                continue;
+            }
+
+            result.Add(sc);
+            Log($"[GACF] {providerOI.ObjectName}: collected catapult {scName} id={scId} (total so far: {result.Count})");
+        }
+        Log($"[GACF] {providerOI.ObjectName}: returning {result.Count} catapults");
+        return result;
+    }
+
     private static bool HasCatapultActiveMission(Spacecraft sc, Company player)
     {
         var mim = MonoBehaviourSingleton<MissionInfoManager>.Instance;
@@ -503,7 +606,7 @@ public static class LogisticsObserver
         Data.LogisticsRequest req, ObjectInfo requester, ResourceDefinition rd,
         double remaining, Company player,
         Dictionary<string, int> scActive,
-        CycleMissionManager cm)
+        CycleMissionManager cm, string networkId)
     {
         var scored = new List<(ObjectInfo provider, double deliverable)>();
 
@@ -513,30 +616,31 @@ public static class LogisticsObserver
 
             var provData = Data.LogisticsNetwork.Get(providerOI);
             if (provData == null) continue;
-            if (!provData.providers.Any(p => p.isActive && p.ResourceDefinition == rd))
+            if (!provData.providers.Any(p => p.isActive && p.ResourceDefinition == rd && p.networkId == networkId))
                 continue;
 
             var oid = providerOI.GetObjectInfoData(player);
             if (oid == null) continue;
 
             var available = oid.CheckResources(rd);
-            var minKeep = provData.providers.Where(p => p.isActive && p.ResourceDefinition == rd).Sum(p => p.minimumKeep);
+            var minKeep = provData.providers.Where(p => p.isActive && p.ResourceDefinition == rd && p.networkId == networkId).Sum(p => p.minimumKeep);
             available -= minKeep;
             if (available <= 0) continue;
 
             double usableExcess = available - req.requestedAmount;
             double maxTake25 = Math.Floor(usableExcess * 0.25);
             double maxDeliver500 = req.requestedAmount * 5.0;
-            double missionCap = Math.Min(maxTake25, maxDeliver500);
-            double targetAmount = Math.Min(available, missionCap);
+            double extraCap = Math.Min(maxTake25, maxDeliver500);
+            double targetAmount = Math.Min(available, req.requestedAmount + extraCap);
             if (targetAmount <= 0) continue;
 
             // Best single-ship SC capacity (closest from above, or largest if none)
             double bestSCCapacity = 0;
             foreach (var quota in provData.spacecraftQuota ?? new List<Data.ShipQuotaEntry>())
             {
-                if (quota.count <= 0) continue;
-                scActive.TryGetValue(quota.typeName, out var activeOfType);
+                if (quota.count <= 0 || quota.networkId != networkId) continue;
+                var activeKey = ActiveKey(networkId, quota.typeName);
+                scActive.TryGetValue(activeKey, out var activeOfType);
                 var canUse = quota.count - activeOfType;
                 if (canUse <= 0) continue;
 
@@ -548,7 +652,10 @@ public static class LogisticsObserver
                         && Data.LogisticsNetwork.QuotaMatches(quota, sc.spacecraftType.ID, sc.spacecraftType.NameRocketType ?? "SC")
                         && cm.GetCycleMission(sc) == null
                         && CanSolarShipReach(sc, requester, player)
-                        && HasFuelForReturn(sc, requester, player))
+                        && (WouldGetStuckOnSurface(sc, requester)
+                              ? HasFuelForReturnOrbit(sc, requester, player)
+                              : HasFuelForReturn(sc, requester, player))
+                        && !WouldGetStuckOnSurface(sc, providerOI))
                     .OrderByDescending(sc => sc.spacecraftType.GetCargoCapacity(player))
                     .ToList();
 
@@ -566,30 +673,34 @@ public static class LogisticsObserver
                 if (typeBest > bestSCCapacity) bestSCCapacity = typeBest;
             }
 
-            // Best LV payload (single launch)
-            double bestLVCapacity = 0;
-            var enabledLVTypes = (provData.launchVehicleQuota ?? new List<Data.ShipQuotaEntry>())
-                .Where(q => q.count > 0)
-                .Select(q => q.typeName)
-                .ToHashSet();
-
-            if (enabledLVTypes.Count > 0)
+            // Also consider catapult capacity if no suitable SC
+            double bestCatapultCapacity = 0;
+            if (bestSCCapacity <= 0)
             {
-                var readyLV = _cachedLaunchVehicles
-                    .Where(lv => lv != null && lv.launchVehicleType != null
-                        && lv.objectInfo == providerOI
-                        && lv.IsReadyToLaunchReusable()
-                        && enabledLVTypes.Contains(Data.LogisticsNetwork.TypeKey(lv.launchVehicleType.ID, lv.launchVehicleType.Name ?? "LV")))
-                    .ToList();
-
-                foreach (var lv in readyLV)
+                foreach (var lvQuota in provData.launchVehicleQuota ?? new List<Data.ShipQuotaEntry>())
                 {
-                    double payload = lv.launchVehicleType.MaxPayloadOnThisObject(providerOI, player);
-                    if (payload > bestLVCapacity) bestLVCapacity = payload;
+                    if (lvQuota.count <= 0 || lvQuota.networkId != networkId) continue;
+
+                    foreach (var rr in oid.GetListSpacecraftFacility())
+                    {
+                        var sc = rr.spacecraft;
+                        if (sc == null || sc.spacecraftType == null || !sc.spacecraftType.MagneticCatapult) continue;
+                        if (sc.GetCompany() != player) continue;
+                        if (!sc.IsReadyToPlan()) continue;
+
+                        var existingCycle = cm.GetCycleMission(sc);
+                        if (existingCycle != null && !existingCycle.customNameFromPlanMission.StartsWith("[LOGI]"))
+                            continue;
+
+                        double cap = sc.spacecraftType.GetCargoCapacity(player);
+                        if (cap > bestCatapultCapacity) bestCatapultCapacity = cap;
+                    }
+
+                    if (bestCatapultCapacity > 0) break;
                 }
             }
 
-            double bestCapacity = Math.Max(bestSCCapacity, bestLVCapacity);
+            double bestCapacity = bestSCCapacity > 0 ? bestSCCapacity : bestCatapultCapacity;
             if (bestCapacity <= 0) continue;
 
             double deliverable = Math.Min(targetAmount, bestCapacity);
@@ -608,7 +719,7 @@ public static class LogisticsObserver
     private static void TryCreateDeliveries(Data.LogisticsRequest req, ObjectInfo requester,
         ResourceDefinition rd, double remaining, Company player,
         Dictionary<string, int> scActive, Dictionary<string, int> lvActive,
-        HashSet<int> usedLvIds, HashSet<int> usedCatapultIds)
+        HashSet<int> usedLvIds, HashSet<int> usedCatapultIds, string networkId)
     {
         var cm = MonoBehaviourSingleton<CycleMissionManager>.Instance;
         if (cm == null) return;
@@ -618,13 +729,7 @@ public static class LogisticsObserver
 
         Log($"[TCD] {reqName}/{rdName}: starting remaining={remaining}");
 
-        if (req.status == Data.LogisticsRequestStatus.InProgress)
-        {
-            Log($"[TCD] {reqName}/{rdName}: req already InProgress — stop (prevents duplicates)");
-            return;
-        }
-
-        var orderedProviders = GetBestProviderOrder(req, requester, rd, remaining, player, scActive, cm);
+        var orderedProviders = GetBestProviderOrder(req, requester, rd, remaining, player, scActive, cm, networkId);
         foreach (var providerOI in orderedProviders)
         {
             if (remaining <= 0) break;
@@ -634,14 +739,14 @@ public static class LogisticsObserver
             var provData = Data.LogisticsNetwork.Get(providerOI);
             if (provData == null) continue;
 
-            if (!provData.providers.Any(p => p.isActive && p.ResourceDefinition == rd))
+            if (!provData.providers.Any(p => p.isActive && p.ResourceDefinition == rd && p.networkId == networkId))
                 continue;
 
             var oid = providerOI.GetObjectInfoData(player);
             if (oid == null) continue;
 
             var available = oid.CheckResources(rd);
-            var minKeep = provData.providers.Where(p => p.isActive && p.ResourceDefinition == rd).Sum(p => p.minimumKeep);
+            var minKeep = provData.providers.Where(p => p.isActive && p.ResourceDefinition == rd && p.networkId == networkId).Sum(p => p.minimumKeep);
             available -= minKeep;
             if (available <= 0)
             {
@@ -654,11 +759,11 @@ public static class LogisticsObserver
             double usableExcess = available - req.requestedAmount;
             double maxTake25 = Math.Floor(usableExcess * 0.25);
             double maxDeliver500 = req.requestedAmount * 5.0;
-            double missionCap = Math.Min(maxTake25, maxDeliver500);
-            double targetAmount = Math.Min(toDeliver, missionCap);
+            double extraCap = Math.Min(maxTake25, maxDeliver500);
+            double targetAmount = Math.Min(toDeliver, req.requestedAmount + extraCap);
             if (targetAmount <= 0) continue;
 
-            Log($"[TCD] {reqName}/{rdName}: prov={provName} available={available} minKeep={minKeep} toDeliver={toDeliver} targetAmount={targetAmount} missionCap={missionCap}");
+            Log($"[TCD] {reqName}/{rdName}: prov={provName} available={available} minKeep={minKeep} toDeliver={toDeliver} targetAmount={targetAmount} extraCap={extraCap}");
 
             bool delivered = false;
 
@@ -667,8 +772,9 @@ public static class LogisticsObserver
             // SC delivery
             foreach (var quota in provData.spacecraftQuota ?? new List<Data.ShipQuotaEntry>())
             {
-                if (quota.count <= 0) continue;
-                scActive.TryGetValue(quota.typeName, out var activeOfType);
+                if (quota.count <= 0 || quota.networkId != networkId) continue;
+                var activeKey = ActiveKey(networkId, quota.typeName);
+                scActive.TryGetValue(activeKey, out var activeOfType);
                 var canUse = quota.count - activeOfType;
                 if (canUse <= 0) continue;
 
@@ -680,7 +786,10 @@ public static class LogisticsObserver
                         && Data.LogisticsNetwork.QuotaMatches(quota, sc.spacecraftType.ID, sc.spacecraftType.NameRocketType ?? "SC")
                         && cm.GetCycleMission(sc) == null
                         && CanSolarShipReach(sc, requester, player)
-                        && HasFuelForReturn(sc, requester, player))
+                        && (WouldGetStuckOnSurface(sc, requester)
+                              ? HasFuelForReturnOrbit(sc, requester, player)
+                              : HasFuelForReturn(sc, requester, player))
+                        && !WouldGetStuckOnSurface(sc, providerOI))
                     .Take(canUse)
                     .OrderByDescending(sc => sc.spacecraftType.GetCargoCapacity(player))
                     .ToList();
@@ -718,9 +827,10 @@ public static class LogisticsObserver
 
                 double actualAmount = Math.Min(targetAmount, totalCapacity);
                 Log($"[TCD] {reqName}/{rdName}: SC delivery via {provName} type={quota.typeName} ships={selectedShips.Count} targetAmount={targetAmount} actual={actualAmount}");
-                SetupCycleMission(req, selectedShips, rd, actualAmount, requester, providerOI);
-                scActive.TryGetValue(quota.typeName, out var cur);
-                scActive[quota.typeName] = cur + selectedShips.Count;
+                SetupCycleMission(req, selectedShips, rd, actualAmount, requester, providerOI, networkId);
+                var scKey = ActiveKey(networkId, quota.typeName);
+                scActive.TryGetValue(scKey, out var cur);
+                scActive[scKey] = cur + selectedShips.Count;
                 remaining -= actualAmount;
                 delivered = true;
                 if (remaining <= 0) return;
@@ -731,7 +841,7 @@ public static class LogisticsObserver
 
             // LV delivery — enabled LV types only (quota > 0 means enabled)
             var enabledLVTypes = (provData.launchVehicleQuota ?? new List<Data.ShipQuotaEntry>())
-                .Where(q => q.count > 0)
+                .Where(q => q.count > 0 && q.networkId == networkId)
                 .Select(q => q.typeName)
                 .ToHashSet();
 
@@ -745,18 +855,19 @@ public static class LogisticsObserver
                 .Where(lv => lv != null && lv.launchVehicleType != null
                     && lv.objectInfo == providerOI
                     && lv.IsReadyToLaunchReusable()
+                    && lv.launchVehicleType.FakeForFacility
                     && enabledLVTypes.Contains(Data.LogisticsNetwork.TypeKey(lv.launchVehicleType.ID, lv.launchVehicleType.Name ?? "LV")))
                 .ToList();
 
             Log($"[TCD] {reqName}/{rdName}: {allLVAtProvider.Count} LVs at {provName}, usedLvIds count={usedLvIds.Count}, content=[{string.Join(",", usedLvIds)}]");
 
             var availableLV = allLVAtProvider
-                .Where(lv => !usedLvIds.Contains(lv.GetHashCode()))
+                .Where(lv => !usedLvIds.Contains(lv.GetHashCode()) && !_busyLvIds.Contains(lv.GetHashCode()))
                 .ToList();
 
             if (availableLV.Count == 0)
             {
-                Log($"[TCD] {reqName}/{rdName}: NO ready LV at {provName} (filtered by usedLvIds)");
+                Log($"[TCD] {reqName}/{rdName}: NO ready LV at {provName} (filtered by usedLvIds={usedLvIds.Count} busyLvIds={_busyLvIds.Count})");
                 Log($"[TCD] {reqName}/{rdName}: All LV at provider: {string.Join(", ", allLVAtProvider.Select(lv => $"{lv.launchVehicleType.Name} id={lv.GetHashCode()}"))}");
                 continue;
             }
@@ -775,89 +886,47 @@ public static class LogisticsObserver
 
             var lvType = bestLV.launchVehicleType;
             Log($"[TCD] {reqName}/{rdName}: selected LV type={lvType.Name} payload={lvType.MaxPayloadOnThisObject(providerOI, player)} FakeForFacility={lvType.FakeForFacility}");
-            // Only add to usedLvIds for regular LV (non-catapult) - catapult uses usedCatapultIds instead
 
-            // Check if target is the low orbit of the provider (surface -> orbit case)
-            var targetIsOrbitOfProvider = providerOI != null
-                && providerOI.LowOrbitCustom != null
-                && providerOI.LowOrbitCustom.GetObjectInfo() == requester;
-
-            Spacecraft scOnOrbit = null;
-            ObjectInfo lvA = providerOI;
-            var providerOrbit = providerOI.LowOrbitCustom?.GetObjectInfo();
-
-            // One-shot delivery via magnetic catapult (no cyclical binding).
-            // Catapult stays at facility, launches payload via LV, mission completes once.
             if (bestLV.launchVehicleType.FakeForFacility)
             {
                 Log($"[TCD] {reqName}/{rdName}: attempting catapult delivery, usedCatapultIds=[{string.Join(",", usedCatapultIds)}]");
-                var magSc = GetMagneticCatapultFromFacility(providerOI, player, usedCatapultIds);
-                if (magSc != null)
+                var allMagScs = GetAllAvailableCatapultsFromFacility(providerOI, player, usedCatapultIds);
+                if (allMagScs.Count > 0)
                 {
                     double lvCapacity = bestLV.launchVehicleType.MaxPayloadOnThisObject(providerOI, player);
-                    double magCapacity = magSc.spacecraftType?.GetCargoCapacity(player) ?? lvCapacity;
-                    double lvActualAmount = Math.Min(targetAmount, Math.Min(lvCapacity, magCapacity));
-                    Log($"[TCD] {reqName}/{rdName}: CATAPULT magSc={magSc.spacecraftType?.NameRocketType} id={magSc.GetHashCode()} lvCapacity={lvCapacity} magCapacity={magCapacity} lvActualAmount={lvActualAmount}");
+                    int needed = Math.Max(1, (int)Math.Ceiling(Math.Min(targetAmount, remaining) / lvCapacity));
+                    var magScs = allMagScs.Take(needed).ToList();
+                    double totalMagCapacity = magScs.Sum(sc => sc.spacecraftType?.GetCargoCapacity(player) ?? 0);
+                    double lvActualAmount = Math.Min(targetAmount, Math.Min(lvCapacity, totalMagCapacity));
+                    Log($"[TCD] {reqName}/{rdName}: CATAPULT all={allMagScs.Count} needed={needed} selected={magScs.Count} lvCapacity={lvCapacity} totalMagCapacity={totalMagCapacity} lvActualAmount={lvActualAmount}");
 
-                    CreateOneShotCatapultMission(req, magSc, rd, lvActualAmount, requester, providerOI, bestLV);
-                    usedCatapultIds.Add(magSc.GetHashCode());
-                    _busyCatapultIds.Add(magSc.GetHashCode());
+                    foreach (var magSc in magScs)
+                    {
+                        usedCatapultIds.Add(magSc.GetHashCode());
+                        _busyCatapultIds.Add(magSc.GetHashCode());
+                    }
+                    usedLvIds.Add(bestLV.GetHashCode());
+                    _busyLvIds.Add(bestLV.GetHashCode());
+
+                    CreateOneShotCatapultMission(req, magScs, rd, lvActualAmount, requester, providerOI, bestLV, networkId);
                     var lvKey = Data.LogisticsNetwork.TypeKey(lvType.ID, lvType.Name ?? "LV");
-                    lvActive.TryGetValue(lvKey, out var lvCur);
-                    lvActive[lvKey] = lvCur + 1;
+                    var lvActiveKey = ActiveKey(networkId, lvKey);
+                    lvActive.TryGetValue(lvActiveKey, out var lvCur);
+                    lvActive[lvActiveKey] = lvCur + 1;
                     remaining -= lvActualAmount;
                     if (remaining <= 0) return;
                 }
                 else
                 {
-                    Log($"[TCD] {reqName}/{rdName}: catapult FAILED — GetMagneticCatapultFromFacility returned null at {provName}");
+                    Log($"[TCD] {reqName}/{rdName}: no MagneticCatapult at {provName} — skip");
                 }
-            }
-            else if (targetIsOrbitOfProvider)
-            {
-                Log($"[TCD] {reqName}/{rdName}: target IS orbit of provider {provName}");
-                usedLvIds.Add(bestLV.GetHashCode());
-                scOnOrbit = MonoBehaviourSingleton<ShipManager>.Instance?.GetLowOrbitContainer(player);
-                lvA = providerOI;
-            }
-            else if (providerOrbit != null)
-            {
-                Log($"[TCD] {reqName}/{rdName}: looking for orbit SC at {providerOrbit.ObjectName}");
-                usedLvIds.Add(bestLV.GetHashCode());
-                scOnOrbit = _cachedSpacecraft
-                    .Where(sc => sc != null && sc.spacecraftType != null
-                        && sc.CurrentlyOnThisObject == providerOrbit
-                        && sc.CurrentPhase == Spacecraft.EPhase.None
-                        && !sc.spacecraftType.LowOrbitContainer
-                        && cm.GetCycleMission(sc) == null
-                        && CanSolarShipReach(sc, requester, player)
-                        && HasFuelForReturn(sc, requester, player))
-                    .FirstOrDefault();
-                lvA = providerOrbit;
-            }
-            else
-            {
-                Log($"[TCD] {reqName}/{rdName}: no orbit available for {provName} — skip silently");
-            }
-
-            if (scOnOrbit != null)
-            {
-                double lvCapacity = bestLV.launchVehicleType.MaxPayloadOnThisObject(providerOI, player);
-                double lvActualAmount = Math.Min(targetAmount, lvCapacity);
-                Log($"[TCD] {reqName}/{rdName}: LV+SC delivery scOnOrbit={scOnOrbit.spacecraftType?.NameRocketType} lvCapacity={lvCapacity} actual={lvActualAmount}");
-                SetupCycleMission(req, scOnOrbit, rd, lvActualAmount, requester, lvA, lvType);
-                var lvKey = Data.LogisticsNetwork.TypeKey(lvType.ID, lvType.Name ?? "LV");
-                lvActive.TryGetValue(lvKey, out var lvCur);
-                lvActive[lvKey] = lvCur + 1;
-                remaining -= lvActualAmount;
-                if (remaining <= 0) return;
             }
         }
     }
 
     private static void SetupCycleMission(Data.LogisticsRequest req, List<Spacecraft> scs,
         ResourceDefinition rd, double amount, ObjectInfo requesterOI, ObjectInfo providerOI,
-        LaunchVehicleType lvTypeA = null)
+        string networkId, LaunchVehicleType lvTypeA = null)
     {
         var player = MonoBehaviourSingleton<GameManager>.Instance.Player;
         var firstSc = scs[0];
@@ -878,7 +947,7 @@ public static class LogisticsObserver
             A = realProvider, B = requesterOI, Company = player,
             CargoStart = ECargoStart.FlyWithWhatIsAvailable, CargoEnd = ECargoStart.FlyWithWhatIsAvailable,
             CargoAllStart = cargoToB, CargoAllEnd = new CargoAll(),
-            LvTypeA = lvTypeA, LvTypeB = null, TransferType = ETransferType.Optimal,
+            LvTypeA = lvTypeA, LvTypeB = null, TransferType = ETransferType.Fastest,
             Ends = EEnds.ThisManyTimes, EndsObjectThisManyTimes = 1, ListSC = scList
         };
         var cmd = new CycleMissionsData(cmdData);
@@ -886,7 +955,7 @@ public static class LogisticsObserver
 
         req.status = Data.LogisticsRequestStatus.InProgress;
 
-        cmd.customNameFromPlanMission = $"[LOGI] {realProvider.ObjectName} → {requesterOI.ObjectName}";
+        cmd.customNameFromPlanMission = $"[LOGI][{networkId}] {realProvider.ObjectName} → {requesterOI.ObjectName}";
 
         var ctrl = firstSc.gameObject.GetComponent<SpaceCraftCyclicalMissionController>();
         if (ctrl == null)
@@ -898,7 +967,7 @@ public static class LogisticsObserver
 
     private static void SetupCycleMission(Data.LogisticsRequest req, Spacecraft container,
         ResourceDefinition rd, double amount, ObjectInfo requesterOI, ObjectInfo providerOI,
-        LaunchVehicleType lvTypeA)
+        LaunchVehicleType lvTypeA, string networkId)
     {
         var player = MonoBehaviourSingleton<GameManager>.Instance.Player;
         if (container == null || player == null) return;
@@ -916,7 +985,7 @@ public static class LogisticsObserver
             A = realProvider, B = requesterOI, Company = player,
             CargoStart = ECargoStart.FlyWithWhatIsAvailable, CargoEnd = ECargoStart.FlyWithWhatIsAvailable,
             CargoAllStart = cargoToB, CargoAllEnd = new CargoAll(),
-            LvTypeA = lvTypeA, LvTypeB = null, TransferType = ETransferType.Optimal,
+            LvTypeA = lvTypeA, LvTypeB = null, TransferType = ETransferType.Fastest,
             Ends = EEnds.ThisManyTimes, EndsObjectThisManyTimes = 1, ListSC = scList
         };
         var cmd = new CycleMissionsData(cmdData);
@@ -924,7 +993,7 @@ public static class LogisticsObserver
 
         req.status = Data.LogisticsRequestStatus.InProgress;
 
-        cmd.customNameFromPlanMission = $"[LOGI] {realProvider.ObjectName} → {requesterOI.ObjectName}";
+        cmd.customNameFromPlanMission = $"[LOGI][{networkId}] {realProvider.ObjectName} → {requesterOI.ObjectName}";
 
         var ctrl = container.gameObject.GetComponent<SpaceCraftCyclicalMissionController>();
         if (ctrl == null)
@@ -934,24 +1003,20 @@ public static class LogisticsObserver
         ctrl.TryPlanCycleMission(loadLimit2: amount);
     }
 
-    private static void CreateOneShotCatapultMission(Data.LogisticsRequest req, Spacecraft catapult,
+    private static void CreateOneShotCatapultMission(Data.LogisticsRequest req, List<Spacecraft> catapults,
         ResourceDefinition rd, double amount, ObjectInfo requesterOI, ObjectInfo providerOI,
-        LaunchVehicle lv)
+        LaunchVehicle lv, string networkId)
     {
         var player = MonoBehaviourSingleton<GameManager>.Instance.Player;
-        if (catapult == null || player == null)
+        if (catapults == null || catapults.Count == 0 || player == null)
         {
-            LogWarning($"[OCM] ABORT: catapult={(catapult!=null)}, player={(player!=null)}");
+            LogWarning($"[OCM] ABORT: catapults.Count={(catapults?.Count ?? 0)}, player={(player != null)}");
             return;
         }
 
-        if (req.status == Data.LogisticsRequestStatus.InProgress)
-        {
-            LogWarning($"[OCM] ABORT: req already InProgress (prevents duplicate)");
-            return;
-        }
+        var firstCatapult = catapults[0];
 
-        Log($"[OCM] creating one-shot mission: {providerOI.ObjectName}->{requesterOI.ObjectName} rd={rd?.Name} amount={amount} lv={lv?.launchVehicleType?.Name} catapultType={catapult?.spacecraftType?.NameRocketType}");
+        Log($"[OCM] creating one-shot mission: {providerOI.ObjectName}->{requesterOI.ObjectName} rd={rd?.Name} amount={amount} lv={lv?.launchVehicleType?.Name} catapults={catapults.Count} firstType={firstCatapult?.spacecraftType?.NameRocketType}");
 
         // Dedup: check if in-transit cargo already covers the request
         {
@@ -994,7 +1059,7 @@ public static class LogisticsObserver
             }
             Log($"[OCM] totalCovered={totalCovered:F2} < requested={req.requestedAmount:F2} — proceeding with mission");
         }
-        var scList = new List<ISpacecraftInfo> { catapult as ISpacecraftInfo };
+        var scList = catapults.Select(c => c as ISpacecraftInfo).ToList();
         var lvList = new List<ILaunchVehicleInfo> { lv };
 
         var cargoToB = new CargoAll();
@@ -1005,19 +1070,19 @@ public static class LogisticsObserver
 
         var ppm = new PMMissionParameter();
         ppm.ForCyclicalMission = true;
-        ppm.ReduceFuelToMinimum = true;
+        ppm.ReduceFuelToMinimum = false;
         ppm.SetMissionOrigin(MissionInfo.EMissionCreator.Manual);
         ppm.TryFastAsPossible = true;
         ppm.SetCompany(player);
         ppm.SetTabDestination(providerOI, requesterOI);
-        ppm.SetTabSC(scList, 1);
-        ppm.ChangeMissionName($"[LOGI] {providerOI.ObjectName} → {requesterOI.ObjectName}", _manualChangeName: true);
+        ppm.SetTabSC(scList, catapults.Count);
+        ppm.ChangeMissionName($"[LOGI][{networkId}] {providerOI.ObjectName} → {requesterOI.ObjectName}", _manualChangeName: true);
         ppm.SetTabCargo(cargoToB);
         ppm.SetTabLV(lvList, 1);
         ppm.ChangeStage(PlanMissionWindow.EStageWindow.Schedule);
         ppm.TrajectoryColor = Color.blue;
 
-        Log($"[OCM] PMMissionParameter ready: player={player.ID} start={providerOI?.ObjectName} target={requesterOI?.ObjectName} cargo={rd?.Name}={amount} SC={catapult?.spacecraftType?.NameRocketType} LV={lv?.launchVehicleType?.Name} ForCyclicalMission={ppm.ForCyclicalMission}");
+        Log($"[OCM] PMMissionParameter ready: player={player.ID} start={providerOI?.ObjectName} target={requesterOI?.ObjectName} cargo={rd?.Name}={amount} SCs={catapults.Count} firstType={firstCatapult?.spacecraftType?.NameRocketType} LV={lv?.launchVehicleType?.Name} ForCyclicalMission={ppm.ForCyclicalMission}");
 
         var checkResult = ppm.CheckCanPlanMission();
         Log($"[OCM] CheckCanPlanMission: result={checkResult.planMissionResult} fuelNeed={checkResult.allFuelNeed} cost={checkResult.allCostDollars} start={checkResult.dateStart} end={checkResult.dateEnd}");

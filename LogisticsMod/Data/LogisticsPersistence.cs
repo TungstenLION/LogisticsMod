@@ -41,6 +41,7 @@ public static class LogisticsPersistence
         public string resourceId;
         public double amount;
         public int status;
+        public string networkId = "";
     }
 
     [Serializable]
@@ -49,6 +50,7 @@ public static class LogisticsPersistence
         public string resourceId;
         public double minKeep;
         public bool active;
+        public string networkId = "";
     }
 
     [Serializable]
@@ -56,6 +58,7 @@ public static class LogisticsPersistence
     {
         public string typeName;
         public int count;
+        public string networkId = "";
     }
 
     public static void Save(string saveName)
@@ -88,7 +91,8 @@ public static class LogisticsPersistence
                     {
                         resourceId = r.ResourceDefinition?.ID ?? r.resourceDef.id,
                         amount = r.requestedAmount,
-                        status = (int)r.status
+                        status = (int)r.status,
+                        networkId = r.networkId
                     });
                 }
 
@@ -98,15 +102,16 @@ public static class LogisticsPersistence
                     {
                         resourceId = p.ResourceDefinition?.ID ?? p.resourceDef.id,
                         minKeep = p.minimumKeep,
-                        active = p.isActive
+                        active = p.isActive,
+                        networkId = p.networkId
                     });
                 }
 
                 foreach (var q in ld.spacecraftQuota)
-                    so.spacecraftQuota.Add(new SavedQuota { typeName = q.typeName, count = q.count });
+                    so.spacecraftQuota.Add(new SavedQuota { typeName = q.typeName, count = q.count, networkId = q.networkId });
 
                 foreach (var q in ld.launchVehicleQuota)
-                    so.launchVehicleQuota.Add(new SavedQuota { typeName = q.typeName, count = q.count });
+                    so.launchVehicleQuota.Add(new SavedQuota { typeName = q.typeName, count = q.count, networkId = q.networkId });
 
                 data.objects.Add(so);
             }
@@ -152,7 +157,8 @@ public static class LogisticsPersistence
                         resourceDef = (ResourceDefinitionIDSave)rd,
                         ResourceDefinition = rd,
                         requestedAmount = sr.amount,
-                        status = (LogisticsRequestStatus)sr.status
+                        status = (LogisticsRequestStatus)sr.status,
+                        networkId = sr.networkId ?? ""
                     });
                 }
 
@@ -164,15 +170,16 @@ public static class LogisticsPersistence
                         resourceDef = (ResourceDefinitionIDSave)rd,
                         ResourceDefinition = rd,
                         minimumKeep = sp.minKeep,
-                        isActive = sp.active
+                        isActive = sp.active,
+                        networkId = sp.networkId ?? ""
                     });
                 }
 
                 foreach (var sq in so.spacecraftQuota)
-                    ld.spacecraftQuota.Add(new ShipQuotaEntry { typeName = sq.typeName, count = sq.count });
+                    ld.spacecraftQuota.Add(new ShipQuotaEntry { typeName = sq.typeName, count = sq.count, networkId = sq.networkId ?? "" });
 
                 foreach (var sq in so.launchVehicleQuota)
-                    ld.launchVehicleQuota.Add(new ShipQuotaEntry { typeName = sq.typeName, count = sq.count });
+                    ld.launchVehicleQuota.Add(new ShipQuotaEntry { typeName = sq.typeName, count = sq.count, networkId = sq.networkId ?? "" });
             }
         }
         catch (Exception)

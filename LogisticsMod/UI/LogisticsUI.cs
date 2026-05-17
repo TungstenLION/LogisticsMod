@@ -1,6 +1,8 @@
 using System.Collections.Generic;
 using System.Linq;
 using CustomUpdate;
+using Data;
+using Data.ScriptableObject;
 using Extensions;
 using Game;
 using Game.Info;
@@ -43,6 +45,10 @@ public class LogisticsUI : MonoBehaviour
     private LogisticsSection _sendSection;
     private LogisticsSection _scSection;
     private LogisticsSection _lvSection;
+    private LogisticsSection _netSection;
+
+    private string _currentNetworkId = "";
+    private HashSet<string> _knownNetworks = new HashSet<string> { "" };
 
     private sealed class RuntimeUiStyle
     {
@@ -90,14 +96,21 @@ public class LogisticsUI : MonoBehaviour
             var styleIcon = oics.buttonsIcons != null && oics.buttonsIcons.Count > 5 ? oics.buttonsIcons[5] : null;
             CaptureRuntimeStyle(oics, styleButton);
 
-            _getSection = new LogisticsSection(_parentRt, FormatSectionTitle("GET", "Request Resources"), _font, sectionWidth,
+            _netSection = new LogisticsSection(_parentRt, "LOGISTICS NETWORKS", _font, sectionWidth,
+                styleButton, styleIcon, oics.spriteExpand, oics.spriteCollapse,
+                _runtimeStyle.HeaderHeight, _runtimeStyle.HeaderFontSize, _runtimeStyle.HeaderBackgroundColor,
+                _runtimeStyle.HeaderTextColor, _runtimeStyle.HeaderDividerColor, new Color(0f, 0f, 0f, 0f),
+                _runtimeStyle.HasHeaderButtonColors ? _runtimeStyle.HeaderButtonColors : null);
+            _sections.Add(_netSection);
+
+            _getSection = new LogisticsSection(_parentRt, FormatSectionTitle("IMPORT", "Request Resources"), _font, sectionWidth,
                 styleButton, styleIcon, oics.spriteExpand, oics.spriteCollapse,
                 _runtimeStyle.HeaderHeight, _runtimeStyle.HeaderFontSize, _runtimeStyle.HeaderBackgroundColor,
                 _runtimeStyle.HeaderTextColor, _runtimeStyle.HeaderDividerColor, new Color(0f, 0f, 0f, 0f),
                 _runtimeStyle.HasHeaderButtonColors ? _runtimeStyle.HeaderButtonColors : null);
             _sections.Add(_getSection);
 
-            _sendSection = new LogisticsSection(_parentRt, FormatSectionTitle("SEND", "Provide Resources"), _font, sectionWidth,
+            _sendSection = new LogisticsSection(_parentRt, FormatSectionTitle("EXPORT", "Provide Resources"), _font, sectionWidth,
                 styleButton, styleIcon, oics.spriteExpand, oics.spriteCollapse,
                 _runtimeStyle.HeaderHeight, _runtimeStyle.HeaderFontSize, _runtimeStyle.HeaderBackgroundColor,
                 _runtimeStyle.HeaderTextColor, _runtimeStyle.HeaderDividerColor, new Color(0f, 0f, 0f, 0f),
@@ -111,7 +124,7 @@ public class LogisticsUI : MonoBehaviour
                 _runtimeStyle.HasHeaderButtonColors ? _runtimeStyle.HeaderButtonColors : null);
             _sections.Add(_scSection);
 
-            _lvSection = new LogisticsSection(_parentRt, FormatSectionTitle("LAUNCH VEHICLE", "Surface Shuttles"), _font, sectionWidth,
+            _lvSection = new LogisticsSection(_parentRt, FormatSectionTitle("LAUNCH SYSTEMS", "Interplanetary transporters"), _font, sectionWidth,
                 styleButton, styleIcon, oics.spriteExpand, oics.spriteCollapse,
                 _runtimeStyle.HeaderHeight, _runtimeStyle.HeaderFontSize, _runtimeStyle.HeaderBackgroundColor,
                 _runtimeStyle.HeaderTextColor, _runtimeStyle.HeaderDividerColor, new Color(0f, 0f, 0f, 0f),
@@ -227,6 +240,7 @@ public class LogisticsUI : MonoBehaviour
         var newOi = oid?.ObjectInfo;
         _currentData = oid;
         _currentObjectInfo = newOi;
+        _currentNetworkId = "";
         if (!_built) return;
         RefreshAllSections();
     }
@@ -259,13 +273,222 @@ public class LogisticsUI : MonoBehaviour
         LayoutRebuilder.ForceRebuildLayoutImmediate(_parentRt);
     }
 
+    private void BuildNetSection()
+    {
+        _netSection.ClearContent();
+        var dataIds = Data.LogisticsNetwork.GetAllNetworkIds();
+        foreach (var id in dataIds)
+            _knownNetworks.Add(id);
+
+        var allIds = _knownNetworks.OrderBy(id => id).ToList();
+
+        var currentLabel = string.IsNullOrEmpty(_currentNetworkId) ? "Global" : _currentNetworkId;
+        _netSection.AddTextRow($"Active network: {currentLabel}", _font, 13f, new Color(0.7f, 0.9f, 0.7f, 1f));
+
+        foreach (var netId in allIds)
+        {
+            var label = string.IsNullOrEmpty(netId) ? "Global" : netId;
+            var isActive = netId == _currentNetworkId;
+
+            var row = MakeHLRow(_netSection.ContentArea, 24f, 4);
+            row.GetComponent<Image>().color = isActive ? new Color(0.28f, 0.38f, 0.52f, 1f) : _runtimeStyle.RowBackgroundColor;
+
+            MakeTMP(row.transform, label, 13, isActive ? Color.white : _runtimeStyle.RowTextColor);
+
+            if (!isActive)
+            {
+                var btn = row.AddComponent<Button>();
+                btn.navigation = new Navigation { mode = Navigation.Mode.None };
+                var capturedNet = netId;
+                btn.onClick.AddListener(() =>
+                {
+                    _currentNetworkId = capturedNet;
+                    RefreshAllSections();
+                });
+            }
+
+            // Delete button (not for Global)
+            if (!string.IsNullOrEmpty(netId))
+            {
+                var capturedNet = netId;
+                MakeXButton(row.transform, () =>
+                {
+                    Data.LogisticsNetwork.RemoveAllForNetwork(capturedNet);
+                    _knownNetworks.Remove(capturedNet);
+                    if (_currentNetworkId == capturedNet)
+                        _currentNetworkId = "";
+                    RefreshAllSections();
+                });
+            }
+        }
+
+        AddBigButton(_netSection.ContentArea, "+ Add Network", _runtimeStyle.SmallButtonPositiveColor, () =>
+        {
+            ShowAddNetworkInput();
+        });
+
+        _netSection.Root.SetActive(true);
+        _netSection.SetExpanded(true);
+        RebuildSectionLayout(_netSection);
+    }
+
+    private void ShowAddNetworkInput()
+    {
+        _netSection.ClearContent();
+        _inputConfirmed = false;
+        var currentName = "";
+
+        AddBigButton(_netSection.ContentArea, "\u2190 Back to networks", _runtimeStyle.BackButtonColor, () =>
+        {
+            BuildNetSection();
+            RebuildSectionLayout(_netSection);
+        });
+
+        var titleLabel = MakeTMP(_netSection.ContentArea, "Enter network name:", 14, new Color(0.9f, 0.9f, 0.5f, 1f));
+        titleLabel.rectTransform.sizeDelta = new Vector2(0, 22);
+
+        var displayRow = MakeHLRow(_netSection.ContentArea, 28f, 0);
+        var displayTmp = MakeTMP(displayRow.transform, "", 16, Color.white);
+        displayTmp.alignment = TextAlignmentOptions.Center;
+
+        var warnRow = MakeHLRow(_netSection.ContentArea, 18f, 0);
+        warnRow.GetComponent<Image>().color = new Color(0, 0, 0, 0);
+        var warnTmp = MakeTMP(warnRow.transform, "", 12, new Color(0.9f, 0.4f, 0.2f, 1f));
+        warnTmp.alignment = TextAlignmentOptions.Center;
+
+        void UpdateDisplay()
+        {
+            displayTmp.text = string.IsNullOrEmpty(currentName) ? "(type a name)" : currentName;
+            warnTmp.text = "";
+        }
+        UpdateDisplay();
+
+        void AddKey(Transform parent, string key, float width)
+        {
+            var btnGo = new GameObject("Key", typeof(RectTransform), typeof(Image), typeof(Button), typeof(LayoutElement));
+            btnGo.transform.SetParent(parent, false);
+            btnGo.GetComponent<LayoutElement>().preferredWidth = width;
+            btnGo.GetComponent<LayoutElement>().preferredHeight = 26f;
+            btnGo.GetComponent<LayoutElement>().flexibleWidth = 0;
+            btnGo.GetComponent<Image>().color = _runtimeStyle.ActionButtonColor;
+            var btn = btnGo.GetComponent<Button>();
+            btn.navigation = new Navigation { mode = Navigation.Mode.None };
+            var captured = key;
+            btn.onClick.AddListener(() =>
+            {
+                currentName += captured;
+                UpdateDisplay();
+            });
+
+            var tmp = MakeTMP(btnGo.transform, key, 13, Color.white);
+            tmp.alignment = TextAlignmentOptions.Center;
+        }
+
+        float keyW = 30f;
+
+        // Row 1: 1 2 3 4 5 6 7 8 9 0 -
+        var row1 = MakeHLRow(_netSection.ContentArea, 28f, 3);
+        foreach (char c in "1234567890")
+            AddKey(row1.transform, c.ToString(), keyW);
+        AddBigButtonInline(row1.transform, "-", _runtimeStyle.ActionButtonColor, () =>
+        {
+            currentName += "-";
+            UpdateDisplay();
+        });
+
+        // Row 2: Q W E R T Y U I O P ⌫
+        var row2 = MakeHLRow(_netSection.ContentArea, 28f, 3);
+        foreach (char c in "QWERTYUIOP")
+            AddKey(row2.transform, c.ToString(), keyW);
+        AddBigButtonInline(row2.transform, "BACKSPACE", _runtimeStyle.SmallButtonColor, () =>
+        {
+            if (currentName.Length > 0)
+                currentName = currentName.Substring(0, currentName.Length - 1);
+            UpdateDisplay();
+        });
+
+        // Row 3: A S D F G H J K L ( ) [ ] / .
+        var row3 = MakeHLRow(_netSection.ContentArea, 28f, 3);
+        foreach (char c in "ASDFGHJKL()[]/.")
+            AddKey(row3.transform, c.ToString(), keyW);
+
+        // Row 4: Z X C V B N M Space
+        var row4 = MakeHLRow(_netSection.ContentArea, 28f, 3);
+        foreach (char c in "ZXCVBNM")
+            AddKey(row4.transform, c.ToString(), keyW);
+        AddBigButtonInline(row4.transform, "Space", _runtimeStyle.ActionButtonColor, () =>
+        {
+            currentName += " ";
+            UpdateDisplay();
+        });
+
+        // Row 5: Clear, Confirm, Cancel
+        var row5 = MakeHLRow(_netSection.ContentArea, 28f, 4);
+        AddBigButtonInline(row5.transform, "Clear", _runtimeStyle.RemoveButtonColor, () =>
+        {
+            currentName = "";
+            UpdateDisplay();
+        });
+        AddBigButtonInline(row5.transform, "Confirm", _runtimeStyle.ConfirmButtonColor, () =>
+        {
+            if (_inputConfirmed) return;
+            var trimmed = currentName.Trim();
+            if (string.IsNullOrEmpty(trimmed))
+            {
+                warnTmp.text = "Name cannot be empty";
+                return;
+            }
+            if (_knownNetworks.Contains(trimmed))
+            {
+                warnTmp.text = $"\"{trimmed}\" already exists";
+                return;
+            }
+            _inputConfirmed = true;
+            _currentNetworkId = trimmed;
+            _knownNetworks.Add(trimmed);
+            RefreshAllSections();
+        });
+        AddBigButtonInline(row5.transform, "Cancel", _runtimeStyle.BackButtonColor, () =>
+        {
+            _inputConfirmed = true;
+            BuildNetSection();
+            RebuildSectionLayout(_netSection);
+        });
+
+        RebuildSectionLayout(_netSection);
+    }
+
     private void RefreshAllSections()
     {
         if (_currentObjectInfo == null) return;
+        BuildNetSection();
         BuildGetSection();
-        BuildSendSection();
-        BuildSCSection();
-        BuildLVSection();
+        _getSection.Root.SetActive(true);
+
+        bool isOrbit = _currentObjectInfo.objectTypes == EObjectTypes.Orbit;
+        bool isFrozen = Data.LogisticsNetwork.IsObjectFrozen(_currentObjectInfo)
+            || (_currentObjectInfo.HabitabilityParameters?.pressure ?? 0d) > 0.0001d;
+        bool requiresLV = Data.LogisticsNetwork.ObjectRequiresLVForLaunch(_currentObjectInfo);
+
+        if (isFrozen)
+        {
+            _sendSection.Root.SetActive(true);
+            _scSection.Root.SetActive(true);
+            _lvSection.Root.SetActive(false);
+            BuildSendSection();
+            BuildSCSection();
+        }
+        else
+        {
+            _sendSection.Root.SetActive(true);
+            _scSection.Root.SetActive(true);
+            _lvSection.Root.SetActive(!isOrbit);
+
+            BuildSendSection();
+            BuildSCSection();
+            if (!isOrbit) BuildLVSection();
+        }
+
         LayoutRebuilder.ForceRebuildLayoutImmediate(_parentRt);
     }
 
@@ -280,12 +503,13 @@ public class LogisticsUI : MonoBehaviour
         _getSection.ClearContent();
         var data = Data.LogisticsNetwork.Get(_currentObjectInfo);
 
-        if (data != null && data.requests.Count > 0)
+        var requests = data?.requests.Where(r => r.networkId == _currentNetworkId).ToList() ?? new List<Data.LogisticsRequest>();
+
+        if (requests.Count > 0)
         {
-            for (int i = 0; i < data.requests.Count; i++)
+            for (int i = 0; i < requests.Count; i++)
             {
-                var req = data.requests[i];
-                var idx = i;
+                var req = requests[i];
                 var rd = req.ResourceDefinition;
                 var displayName = ResourceLabel(rd, req.resourceDef?.id);
                 var statusStr = StatusToString(req.status);
@@ -294,9 +518,10 @@ public class LogisticsUI : MonoBehaviour
                 var row = MakeHLRow(_getSection.ContentArea, 24f, 8);
                 MakeTMP(row.transform, $"{displayName}: {req.requestedAmount:0.#}  [{statusStr}]{noteStr}", 13, StatusColor(req.status));
                 var capturedOi = _currentObjectInfo;
+                var capturedIdx = data.requests.IndexOf(req);
                 MakeXButton(row.transform, () =>
                 {
-                    Data.LogisticsNetwork.RemoveRequest(capturedOi, idx);
+                    if (capturedIdx >= 0) Data.LogisticsNetwork.RemoveRequest(capturedOi, capturedIdx);
                     BuildGetSection();
                     RebuildSectionLayout(_getSection);
                 });
@@ -318,21 +543,23 @@ public class LogisticsUI : MonoBehaviour
         _sendSection.ClearContent();
         var data = Data.LogisticsNetwork.Get(_currentObjectInfo);
 
-        if (data != null && data.providers.Count > 0)
+        var providers = data?.providers.Where(p => p.networkId == _currentNetworkId).ToList() ?? new List<Data.LogisticsProvider>();
+
+        if (providers.Count > 0)
         {
-            for (int i = 0; i < data.providers.Count; i++)
+            for (int i = 0; i < providers.Count; i++)
             {
-                var prov = data.providers[i];
-                var idx = i;
+                var prov = providers[i];
                 var rd = prov.ResourceDefinition;
                 var displayName = ResourceLabel(rd, prov.resourceDef?.id);
 
                 var row = MakeHLRow(_sendSection.ContentArea, 24f, 8);
                 MakeTMP(row.transform, $"{displayName}: min keep {prov.minimumKeep:0.#}", 13, new Color(0.7f, 0.7f, 0.7f, 1f));
                 var capturedOi = _currentObjectInfo;
+                var capturedIdx = data.providers.IndexOf(prov);
                 MakeXButton(row.transform, () =>
                 {
-                    Data.LogisticsNetwork.RemoveProvider(capturedOi, idx);
+                    if (capturedIdx >= 0) Data.LogisticsNetwork.RemoveProvider(capturedOi, capturedIdx);
                     BuildSendSection();
                     RebuildSectionLayout(_sendSection);
                 });
@@ -373,11 +600,13 @@ public class LogisticsUI : MonoBehaviour
         }
 
         var data = Data.LogisticsNetwork.Get(_currentObjectInfo);
-        var quotas = data?.spacecraftQuota ?? new List<Data.ShipQuotaEntry>();
+        var quotas = data?.spacecraftQuota?.Where(q => q.networkId == _currentNetworkId).ToList() ?? new List<Data.ShipQuotaEntry>();
+        if (isSpacecraft)
+            quotas = quotas.Where(q => !TypeWouldGetStuckOnSurface(FindSpacecraftType(q.typeName), _currentObjectInfo)).ToList();
 
         var player = MonoBehaviourSingleton<GameManager>.Instance?.Player;
         LogisticsObserver.GetActiveCycleCounts(player, out var scActive, out var lvActive);
-        var active = isSpacecraft ? scActive : lvActive;
+        var active = scActive;
 
         if (quotas.Count > 0)
         {
@@ -385,7 +614,8 @@ public class LogisticsUI : MonoBehaviour
             {
                 var quotaTypeName = q.typeName;
                 var quotaCount = q.count;
-                active.TryGetValue(quotaTypeName, out var activeCount);
+                var activeKey = $"{_currentNetworkId}\0{quotaTypeName}";
+                active.TryGetValue(activeKey, out var activeCount);
                 var free = quotaCount - activeCount;
 
                 var row = MakeHLRow(section.ContentArea, 28f, 4);
@@ -405,9 +635,9 @@ public class LogisticsUI : MonoBehaviour
                     var capturedOi = _currentObjectInfo;
                     var newVal = quotaCount - 1;
                     if (newVal <= 0)
-                        Data.LogisticsNetwork.RemoveQuota(capturedOi, quotaTypeName, isSpacecraft);
+                        Data.LogisticsNetwork.RemoveQuota(capturedOi, quotaTypeName, isSpacecraft, _currentNetworkId);
                     else
-                        Data.LogisticsNetwork.SetQuota(capturedOi, quotaTypeName, newVal, isSpacecraft);
+                        Data.LogisticsNetwork.SetQuota(capturedOi, quotaTypeName, newVal, isSpacecraft, _currentNetworkId);
                     BuildShipSection(section, isSpacecraft);
                     RebuildSectionLayout(section);
                 });
@@ -415,7 +645,7 @@ public class LogisticsUI : MonoBehaviour
                 AddSmallButton(row.transform, "+", _runtimeStyle.SmallButtonPositiveColor, () =>
                 {
                     var capturedOi = _currentObjectInfo;
-                    Data.LogisticsNetwork.SetQuota(capturedOi, quotaTypeName, quotaCount + 1, isSpacecraft);
+                    Data.LogisticsNetwork.SetQuota(capturedOi, quotaTypeName, quotaCount + 1, isSpacecraft, _currentNetworkId);
                     BuildShipSection(section, isSpacecraft);
                     RebuildSectionLayout(section);
                 });
@@ -455,7 +685,7 @@ public class LogisticsUI : MonoBehaviour
             var lvTypeName = kv.Key;
             var count = kv.Value;
 
-            var currentQuota = Data.LogisticsNetwork.GetQuota(_currentObjectInfo, lvTypeName, false);
+            var currentQuota = Data.LogisticsNetwork.GetQuota(_currentObjectInfo, lvTypeName, false, _currentNetworkId);
             var isEnabled = currentQuota > 0;
 
             var row = MakeHLRow(section.ContentArea, 26f, 4);
@@ -475,9 +705,9 @@ public class LogisticsUI : MonoBehaviour
             btn.onClick.AddListener(() =>
             {
                 if (currentQuota > 0)
-                    Data.LogisticsNetwork.RemoveQuota(capturedOi, capturedType, false);
+                    Data.LogisticsNetwork.RemoveQuota(capturedOi, capturedType, false, _currentNetworkId);
                 else
-                    Data.LogisticsNetwork.SetQuota(capturedOi, capturedType, 1, false);
+                    Data.LogisticsNetwork.SetQuota(capturedOi, capturedType, 1, false, _currentNetworkId);
                 BuildShipSection(section, false);
                 RebuildSectionLayout(section);
             });
@@ -519,9 +749,12 @@ public class LogisticsUI : MonoBehaviour
         foreach (var kv in typeCounts)
         {
             var shipTypeName = kv.Key;
+            if (isSpacecraft && TypeWouldGetStuckOnSurface(FindSpacecraftType(shipTypeName), _currentObjectInfo))
+                continue;
             var totalCount = kv.Value;
-            var currentQuota = Data.LogisticsNetwork.GetQuota(_currentObjectInfo, shipTypeName, isSpacecraft);
-            active.TryGetValue(shipTypeName, out var activeCount);
+            var currentQuota = Data.LogisticsNetwork.GetQuota(_currentObjectInfo, shipTypeName, isSpacecraft, _currentNetworkId);
+            var activeKey = $"{_currentNetworkId}\0{shipTypeName}";
+            active.TryGetValue(activeKey, out var activeCount);
             var freeQuota = (currentQuota > 0) ? $"{currentQuota - activeCount}/{currentQuota}" : "0";
             var displayQuota = currentQuota > 0 ? $"quota: {freeQuota}" : "no quota";
 
@@ -533,7 +766,7 @@ public class LogisticsUI : MonoBehaviour
             AddSmallButton(row.transform, "+", _runtimeStyle.SmallButtonPositiveColor, () =>
             {
                 var capturedOi = _currentObjectInfo;
-                Data.LogisticsNetwork.SetQuota(capturedOi, shipTypeName, currentQuota + 1, isSpacecraft);
+                Data.LogisticsNetwork.SetQuota(capturedOi, shipTypeName, currentQuota + 1, isSpacecraft, _currentNetworkId);
                 if (isSpacecraft) BuildSCSection(); else BuildLVSection();
                 RebuildSectionLayout(section);
             });
@@ -566,7 +799,7 @@ public class LogisticsUI : MonoBehaviour
         if (player != null && _currentObjectInfo != null)
         {
             if (isGet)
-                available = Data.LogisticsNetwork.GetNetworkResourcesSet(player);
+                available = Data.LogisticsNetwork.GetNetworkResourcesSet(player, _currentNetworkId);
             else
                 available = Data.LogisticsNetwork.GetAvailableResourcesOnObject(_currentObjectInfo, player);
         }
@@ -575,7 +808,13 @@ public class LogisticsUI : MonoBehaviour
             available = new HashSet<ResourceDefinition>();
         }
 
-        foreach (var rd in am.AllResourceDefinitions.ListNotEmpty)
+        var sorted = am.AllResourceDefinitions.ListNotEmpty
+            .Where(rd => rd.ResourceType != ResourceDefinition.EResourceType.Energy && rd.ResourceType != ResourceDefinition.EResourceType.Human)
+            .OrderByDescending(rd => available.Contains(rd))
+            .ThenBy(rd => rd.ID)
+            .ToList();
+
+        foreach (var rd in sorted)
         {
             var rdCaptured = rd;
             var sectionRef = section;
@@ -659,9 +898,9 @@ public class LogisticsUI : MonoBehaviour
             if (currentAmount > 0)
             {
                 if (isGet)
-                    Data.LogisticsNetwork.AddRequest(capturedOi, rd, currentAmount);
+                    Data.LogisticsNetwork.AddRequest(capturedOi, rd, currentAmount, _currentNetworkId);
                 else
-                    Data.LogisticsNetwork.AddProvider(capturedOi, rd, currentAmount);
+                    Data.LogisticsNetwork.AddProvider(capturedOi, rd, currentAmount, _currentNetworkId);
             }
             if (isGet) BuildGetSection(); else BuildSendSection();
             RebuildSectionLayout(section);
@@ -839,6 +1078,28 @@ public class LogisticsUI : MonoBehaviour
         if (string.IsNullOrEmpty(spriteId)) return "";
         var objManager = MonoBehaviourSingleton<ObjectInfoManager>.Instance;
         return objManager != null ? objManager.spriteTextStart5.MyFormat(spriteId, "") : "";
+    }
+
+    private static bool TypeWouldGetStuckOnSurface(SpacecraftType scType, ObjectInfo body)
+    {
+        if (scType == null || body == null) return false;
+        if (body.objectTypes != EObjectTypes.Planet && body.objectTypes != EObjectTypes.Moons)
+            return false;
+        if (scType.DestroyOnLand || scType.LowOrbitContainer || scType.MagneticCatapult)
+            return false;
+        return scType.needLaunchVehicleToGoToMoon;
+    }
+
+    private static SpacecraftType FindSpacecraftType(string typeKey)
+    {
+        foreach (var sc in Object.FindObjectsOfType<Spacecraft>())
+        {
+            var t = sc?.spacecraftType;
+            if (t == null) continue;
+            if (Data.LogisticsNetwork.TypeKey(t.ID, t.NameRocketType ?? "SC") == typeKey || t.NameRocketType == typeKey)
+                return t;
+        }
+        return null;
     }
 
 }

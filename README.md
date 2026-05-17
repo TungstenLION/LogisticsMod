@@ -11,14 +11,20 @@ A [BepInEx](https://github.com/BepInEx/BepInEx) mod for the game **Solar Expanse
 
 ## Features
 
-- **Automated interplanetary logistics** — set up "GET" requests and "SEND" providers on any celestial body, and the mod handles the rest.
+- **Automated interplanetary logistics** — set up IMPORT requests and EXPORT providers on any celestial body, and the mod handles the rest.
+- **Multi-network system** — isolate logistics between groups of objects using named networks. Global (`""`) is the default. Create as many networks as you need.
 - **Spacecraft (SC) delivery** — assign quotas to ship types (e.g. "use up to 3 TALOS for logistics"). The mod finds idle ships at the provider, creates cyclical missions, and delivers resources automatically.
-- **Launch Vehicle (LV) delivery** — enable specific LV types for surface-to-orbit or surface-to-other-body deliveries. Uses orbital containers for same-body orbit, regular spacecraft for interplanetary.
-- **Smart ship selection (best-fit)** — the mod selects the minimum number of ships needed to meet delivery capacity, instead of blindly dispatching the first available ship.
+- **Magnetic catapult delivery** — catapults launch cargo via one-shot missions and return to duty. Multiple catapults can be used per mission for larger payloads.
+- **Smart provider selection** — the mod picks the best provider and right-sized ship for each delivery, instead of blindly dispatching the first available ship.
+- **Smart provider selection** — the mod picks the best provider and right-sized ship for each delivery, instead of blindly dispatching the first available ship.
+- **Cargo in transit is tracked** — resources already on their way are subtracted from the need, preventing over-delivery.
+- **Stuck deliveries auto-recover** — if a delivery gets stuck InProgress without launching for 3+ days, the mod resets it and tries again. Handles both cyclical and one-shot missions.
+- **No duplicate LV/catapult assignments** — each LV and catapult is used at most once per day tick. LVs tracked via `_busyLvIds`, catapults via `_busyCatapultIds`.
 - **Solar & fuel reachability checks** — validates that spacecraft can actually reach the destination and have enough fuel for the return trip. Solar sail ships are preferred for long-haul routes.
-- **Stuck mission auto-cleanup** — automatically detects and recovers from cyclical or one-shot missions that failed to depart, resetting requests to retry.
 - **Quota-based ship management** — no ship locking or hiding. Quotas are soft limits: ships remain visible and usable in the vanilla mission planner. Logistics simply won't exceed the quota.
-- **Persistent save/load** — all requests, providers, and quotas are saved per save file. Active deliveries are reconciled on load.
+- **UI matches the game's style** — fonts, colors, and sizes are captured from the game's own panels. Resource and ship types show their in-game icons.
+- **Instant UI refresh** — IMPORT/EXPORT/vessel quotas update immediately when switching between body and orbit, no delay.
+- **Persistent save/load** — all requests, providers, and quotas are saved per save file. All active missions are reconnected on load.
 - **Button-based amount input** — no text fields, just `+10` `+100` `+1K` buttons for quick resource amount entry.
 
 ## Installation
@@ -33,10 +39,11 @@ A [BepInEx](https://github.com/BepInEx/BepInEx) mod for the game **Solar Expanse
 ### Quick Start
 
 1. On a **source object** (planet, moon, orbit — any celestial body with resources), open its Logistics tab and:
-   - Set up **SEND** — specify a resource and a minimum keep amount. The storage will not drop below this amount.
+   - Set up **EXPORT** — specify a resource and a minimum keep amount. The storage will not drop below this amount.
    - Set up **SPACECRAFT quotas** — specify how many ships of each type logistics may use. After each logistics mission, ships return to their home object.
-2. On the **target object**, set up **GET** — request the resource you need.
-3. That's it. The mod handles the rest automatically.
+2. On the **target object**, set up **IMPORT** — request the resource you need.
+3. Optionally, use the **LOGISTICS NETWORKS** section to isolate logistics between groups (e.g. separate networks for different colonies).
+4. That's it. The mod handles the rest automatically.
 
 > **⚠️ There are MANY known issues with this mod. Read below before using.**
 
@@ -44,10 +51,11 @@ A [BepInEx](https://github.com/BepInEx/BepInEx) mod for the game **Solar Expanse
 
 | Section | Purpose |
 |---------|---------|
-| **GET — Request Resources** | List resources you want delivered to this body. Shows status: pending, in transit, satisfied. |
-| **SEND — Provide Resources** | List resources this body exports to the network. Set minimum keep to reserve local stock. |
-| **SPACECRAFT — Logistics Vessels** | Assign quotas to interplanetary ship types. Format: `free/total TYPENAME`. |
-| **LAUNCH VEHICLE — Surface Shuttles** | Toggle launch vehicle types ON/OFF for surface-to-orbit transfers. |
+| **LOGISTICS NETWORKS** | Create, switch, and delete named networks. Active network filters all other sections. |
+| **IMPORT — Request Resources** | List resources you want delivered to this body. Shows status: pending, in transit, satisfied. Filtered by active network. |
+| **EXPORT — Provide Resources** | List resources this body exports to the network. Set minimum keep to reserve local stock. Filtered by active network. |
+| **SPACECRAFT — Logistics Vessels** | Assign quotas to interplanetary ship types. Format: `free/total TYPENAME`. Filtered by active network. |
+| **LAUNCH SYSTEMS — Interplanetary transporters** | Toggle magnetic catapult launch vehicle types ON/OFF for surface-to-orbit transfers. Only FakeForFacility types appear. Hidden on frozen objects and orbits. |
 
 ### Status Types
 - **pending** — waiting for available ships or resources
@@ -61,41 +69,48 @@ Requests that cannot be fulfilled stay `pending` and retry each day.
 
 - **Solar Expanse** (Steam version)
 - **BepInEx 5.x** (x64)
+- **Newtonsoft.Json** (included with the game)
 
 ## Architecture
 
 ```
 ObjectInfoWindow (game)
   └─ LogisticsUI (MonoBehaviour)
-       ├─ GET section (requests)
-       ├─ SEND section (providers)
-       ├─ SPACECRAFT section (SC quotas)
-       └─ LAUNCH VEHICLE section (LV toggles)
+       ├─ LOGISTICS NETWORKS section (create/switch/delete networks)
+       ├─ IMPORT section (requests + transit info, network-scoped)
+       ├─ EXPORT section (providers, network-scoped)
+       ├─ SPACECRAFT section (SC quotas, network-scoped)
+       └─ LAUNCH SYSTEMS section (catapult LV toggles, network-scoped)
 
 LogisticsObserver (static)
-  ├─ OnDayChange() — main loop (cached SC/LV lists)
-  ├─ TryCreateDeliveries() — SC + LV delivery creation (best-fit)
-  ├─ SetupCycleMission() — create game cycles
-  ├─ SetupCatapultCycleMission() — magnetic catapult cycles
-  ├─ CleanupStuckMissions() — recover from failed deliveries
-  └─ Solar/fuel reachability checks
+  ├─ OnDayChange() — main loop (per-network processing)
+  ├─ GetBestProviderOrder() — scores providers by capacity fit (network-scoped)
+  ├─ TryCreateDeliveries() — SC + magnetic catapult delivery creation
+  ├─ SetupCycleMission() / CreateOneShotCatapultMission()
+  ├─ CleanupStuckMissions() — recover from stuck deliveries
+  ├─ GetNetworkIdFromName() — parse network from mission name
+  ├─ GetAllAvailableCatapultsFromFacility() — multi-catapult support
+  └─ Solar/fuel/surface reachability checks (including GetStuckOnSurface)
 
 LogisticsNetwork (static)
-  └─ Dictionary<int, LogisticsObjectData> — keyed by oi.id
+  ├─ Dictionary<int, LogisticsObjectData> — keyed by oi.id
+  ├─ GetAllNetworkIds() / RemoveAllForNetwork()
+  ├─ GetNetworkResourcesSet(player, networkId)
+  └─ IsMagneticCatapultLV()
 
 LogisticsPersistence (static)
-  └─ JSON save/load per save file
+  └─ JSON save/load per save file (includes networkId in all types)
 
 SpaceCraftCyclicalMissionControllerPatches
-  ├─ LogiLoadLimit tracking — persists catapult cargo limits
-  └─ ShowNotification handler — reset failed LOGI cycles
+  ├─ TryPlanCycleMission prefix — block LOGI replanning, reapply loadLimit2
+  ├─ ShowNotification postfix — reset failed LOGI missions
+  ├─ OnClickScheduleButtonForCode postfix — restore [LOGI] names, set fromCyclicalMission
+  ├─ ChangeMissionName prefix — prevent game overwriting [LOGI] names
+  └─ CreateFly prefix — restore [LOGI] name safety net
 ```
 
 ## Known Issues
 
-- **Launch Vehicles are still somewhat unstable.** Surface-to-orbit via LV works best; interplanetary LV deliveries may behave unexpectedly. Consider using spacecraft for cross-body routes.
-- **Spacecraft with large cargo capacity** — the ship uses its maximum capacity even if the target object only requested a small amount (mitigated by best-fit selection but not eliminated).
-- **Fuel-based spacecraft** — requires fuel at the target object for the return trip to the home object. Solar sail ships are strongly recommended for logistics.
-- **Due to the two issues above, solar sail spacecraft work best.**
-- **Magnetic catapult missions** — not working rn sorry
+- **Only magnetic catapult LVs are supported for delivery.** Regular launch vehicles (surface-to-orbit) are no longer used. Deliveries happen via SC (interplanetary) or magnetic catapult (surface-to-orbit/orbit-to-orbit).
+- **Fuel-based spacecraft** — requires fuel at the target object for the return trip. Solar sail ships preferred for long hauls.
 - **Multiple simultaneous deliveries** — the mod does not yet coordinate multiple in-flight deliveries to the same destination; excess resources may be delivered.
