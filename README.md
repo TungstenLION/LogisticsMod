@@ -113,4 +113,3 @@ SpaceCraftCyclicalMissionControllerPatches
 
 - **Only magnetic catapult LVs are supported for delivery.** Regular launch vehicles (surface-to-orbit) are no longer used. Deliveries happen via SC (interplanetary) or magnetic catapult (surface-to-orbit/orbit-to-orbit).
 - **Fuel-based spacecraft** — requires fuel at the target object for the return trip. Solar sail ships preferred for long hauls.
-- **Multiple simultaneous deliveries** — the mod does not yet coordinate multiple in-flight deliveries to the same destination; excess resources may be delivered.
