@@ -34,7 +34,7 @@ Also check out [Tedd's fork](https://github.com/ted505/LogisticsModTeddFork) of 
 1. First, try to find providers on the parent planet below (if the requester is an orbit).
 2. For each provider, pick the ship with the most suitable cargo capacity
    (closest from above, or multiple combined if one isn't enough — all in one mission).
-3. Try to ship a little extra if there's spare room:
+3. Try to ship a extra if there's spare room:
    - max 500% of the original request
    - max 25% of the provider's surplus stock (after subtracting minKeep + request)
 4. If the delivery didn't fully cover the need, move on to the next provider
