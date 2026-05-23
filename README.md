@@ -24,10 +24,21 @@ Also check out [Tedd's fork](https://github.com/ted505/LogisticsModTeddFork) of 
 ### Quick explanation
 
 - LOGISTICS NETWORKS - Global is default one, create new ones if needed (i use it for local networks like JUPITER-SOI or MARS-SOI). You can have multiple networks per object.
-- IMPORT - requests resources from network. Priorities: EXPORT from planet using LV (launch vehicles or facilities) if orbit, then everything else. Tries to use SC (spacecrafts) with best cargo fit with 1 ship, so providers with small ship will be prioritized for small imports and large requests will try to use big ships.
+- IMPORT - requests resources with target resource count from network providers. 
 - EXPORT - sends resources to network, can set min keep. Also if body has orbit you can set "to orbit" true and it will send all of resource above min keep to orbit using assigned LV.
 - SPACECRAFT - Assign what types of SC logistics can use. Be aware that full fueltank worth of fuel is needed on provider and destination to work. Works best with magnetic catapults and solar sails.
 - LAUNCH SYSTEMS - Assign what LV and facilities to use with logistic network. Checks for full fueltank ob object before being available.
+
+### How much requests
+
+1. First, try to find providers on the parent planet below (if the requester is an orbit).
+2. For each provider, pick the ship with the most suitable cargo capacity
+   (closest from above, or multiple combined if one isn't enough — all in one mission).
+3. Try to ship a little extra if there's spare room:
+   - max 500% of the original request
+   - max 25% of the provider's surplus stock (after subtracting minKeep + request)
+4. If the delivery didn't fully cover the need, move on to the next provider
+   and repeat.
 
 
 
