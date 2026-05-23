@@ -39,8 +39,3 @@ Also check out [Tedd's fork](https://github.com/ted505/LogisticsModTeddFork) of 
    - max 25% of the provider's surplus stock (after subtracting minKeep + request)
 4. If the delivery didn't fully cover the need, move on to the next provider
    and repeat.
-
-
-
-
-
