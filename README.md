@@ -17,7 +17,7 @@ Also check out [Tedd's fork](https://github.com/ted505/LogisticsModTeddFork) of 
 ## Installation
 
 1. Install [BepInEx 5.x](https://github.com/BepInEx/BepInEx) for Solar Expanse.
-2. Download zip archive from [Releases](https://github.com/yourusername/logistics-mod/releases).
+2. Download zip archive from [Releases](https://github.com/TungstenLION/LogisticsMod/releases).
 3. Place logisticsmod in `BepInEx/plugins/`.
 4. Launch the game. Open any object's info window — the Logistics tab appears at the bottom.
 
